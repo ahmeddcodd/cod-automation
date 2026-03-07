@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import hashlib
 import base64
@@ -18,6 +19,23 @@ def verify_shopify_signature(body: bytes, hmac_header: str) -> bool:
     return hmac.compare_digest(computed, hmac_header or "")
 
 
+def _insert_order_record(order_data: dict) -> None:
+    supabase = get_supabase()
+    supabase.table("orders").insert({
+        "order_id":    order_data["order_id"],
+        "order_name":  order_data["order_name"],
+        "merchant_id": order_data["merchant_id"],
+        "phone":       order_data["phone"],
+        "customer":    order_data["customer"],
+        "product":     order_data["product"],
+        "amount":      order_data["amount"],
+        "currency":    order_data["currency"],
+        "risk_score":  order_data["risk_score"],
+        "risk_flags":  order_data["risk_flags"],
+        "status":      "pending",
+    }).execute()
+
+
 @router.post("/shopify/order")
 async def receive_order(
     request: Request,
@@ -25,7 +43,10 @@ async def receive_order(
     x_merchant_id: str = Header(None),
 ):
     raw_body = await request.body()
-    order = await request.json()
+    try:
+        order = await request.json()
+    except Exception:
+        return {"status": "error", "reason": "invalid JSON payload"}
 
     print("Step 1: Order received")
 
@@ -57,10 +78,14 @@ async def receive_order(
 
     # Risk check
     try:
-        risk = await calculate_risk(order_data)
+        risk = await asyncio.wait_for(calculate_risk(order_data), timeout=8)
         order_data["risk_score"] = risk["score"]
         order_data["risk_flags"] = risk["flags"]
         print(f"Step 3: Risk score = {risk['score']}")
+    except asyncio.TimeoutError:
+        print("Risk check timed out")
+        order_data["risk_score"] = 0.0
+        order_data["risk_flags"] = []
     except Exception as e:
         print(f"Risk check failed: {e}")
         order_data["risk_score"] = 0.0
@@ -68,21 +93,11 @@ async def receive_order(
 
     # Save to Supabase
     try:
-        supabase = get_supabase()
-        supabase.table("orders").insert({
-            "order_id":    order_data["order_id"],
-            "order_name":  order_data["order_name"],
-            "merchant_id": order_data["merchant_id"],
-            "phone":       order_data["phone"],
-            "customer":    order_data["customer"],
-            "product":     order_data["product"],
-            "amount":      order_data["amount"],
-            "currency":    order_data["currency"],
-            "risk_score":  order_data["risk_score"],
-            "risk_flags":  order_data["risk_flags"],
-            "status":      "pending",
-        }).execute()
+        await asyncio.wait_for(asyncio.to_thread(_insert_order_record, order_data), timeout=8)
         print("Step 4: Order saved to Supabase")
+    except asyncio.TimeoutError:
+        print("Supabase insert timed out")
+        return {"status": "error", "reason": "supabase insert timeout"}
     except Exception as e:
         print(f"Supabase insert failed: {e}")
         return {"status": "error", "reason": str(e)}
