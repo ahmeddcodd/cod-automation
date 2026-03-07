@@ -43,6 +43,11 @@ async def receive_order(
     x_merchant_id: str = Header(None),
 ):
     raw_body = await request.body()
+    
+    if os.getenv("VERIFY_SHOPIFY_SIGNATURE", "true") == "true":
+        if not verify_shopify_signature(raw_body, x_shopify_hmac_sha256):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        
     try:
         order = await request.json()
     except Exception:
