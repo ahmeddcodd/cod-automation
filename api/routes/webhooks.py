@@ -25,22 +25,18 @@ async def receive_order(
     x_merchant_id: str = Header(None),
 ):
     raw_body = await request.body()
-
-    # Verify it's genuinely from Shopify
-    # if not verify_shopify_signature(raw_body, x_shopify_hmac_sha256):
-    #     raise HTTPException(status_code=401, detail="Invalid webhook signature")
-
     order = await request.json()
+
+    print("Step 1: Order received")
 
     # Only handle COD orders
     gateway = order.get("payment_gateway", "").lower()
     if "cod" not in gateway and "cash" not in gateway:
         return {"status": "skipped", "reason": "not a COD order"}
 
-    # Build a clean order object
-    billing = order.get("billing_address") or {}
-    phone   = order.get("phone") or billing.get("phone", "")
-    items   = order.get("line_items", [])
+    billing  = order.get("billing_address") or {}
+    phone    = order.get("phone") or billing.get("phone", "")
+    items    = order.get("line_items", [])
 
     order_data = {
         "order_id":    str(order["id"]),
@@ -54,35 +50,56 @@ async def receive_order(
         "currency":    order.get("currency", "PKR"),
     }
 
-    # Skip if no phone number
     if not order_data["phone"] or len(order_data["phone"]) < 10:
         return {"status": "skipped", "reason": "missing phone number"}
 
+    print(f"Step 2: Running risk check for {order_data['phone']}")
+
     # Risk check
-    risk = await calculate_risk(order_data)
-    order_data["risk_score"] = risk["score"]
-    order_data["risk_flags"] = risk["flags"]
+    try:
+        risk = await calculate_risk(order_data)
+        order_data["risk_score"] = risk["score"]
+        order_data["risk_flags"] = risk["flags"]
+        print(f"Step 3: Risk score = {risk['score']}")
+    except Exception as e:
+        print(f"Risk check failed: {e}")
+        order_data["risk_score"] = 0.0
+        order_data["risk_flags"] = []
 
     # Save to Supabase
-    supabase = get_supabase()
-    supabase.table("orders").insert({
-        "order_id":    order_data["order_id"],
-        "order_name":  order_data["order_name"],
-        "merchant_id": order_data["merchant_id"],
-        "phone":       order_data["phone"],
-        "customer":    order_data["customer"],
-        "product":     order_data["product"],
-        "amount":      order_data["amount"],
-        "currency":    order_data["currency"],
-        "risk_score":  order_data["risk_score"],
-        "risk_flags":  order_data["risk_flags"],
-        "status":      "pending",
-    }).execute()
+    try:
+        supabase = get_supabase()
+        supabase.table("orders").insert({
+            "order_id":    order_data["order_id"],
+            "order_name":  order_data["order_name"],
+            "merchant_id": order_data["merchant_id"],
+            "phone":       order_data["phone"],
+            "customer":    order_data["customer"],
+            "product":     order_data["product"],
+            "amount":      order_data["amount"],
+            "currency":    order_data["currency"],
+            "risk_score":  order_data["risk_score"],
+            "risk_flags":  order_data["risk_flags"],
+            "status":      "pending",
+        }).execute()
+        print("Step 4: Order saved to Supabase")
+    except Exception as e:
+        print(f"Supabase insert failed: {e}")
+        return {"status": "error", "reason": str(e)}
 
-    # Always send WhatsApp first — even for high risk orders
-    await send_confirmation(order_data["phone"], order_data)
+    # Send WhatsApp
+    try:
+        await send_confirmation(order_data["phone"], order_data)
+        print("Step 5: WhatsApp sent")
+    except Exception as e:
+        print(f"WhatsApp failed: {e}")
 
-    # Kick off background wait → auto-cancel flow
-    await trigger_confirmation_flow(order_data)
+    # Fire Inngest
+    try:
+        await trigger_confirmation_flow(order_data)
+        print("Step 6: Inngest triggered")
+    except Exception as e:
+        print(f"Inngest failed: {e}")
 
+    print("Step 7: Done")
     return {"status": "processing", "order_id": order_data["order_id"]}
