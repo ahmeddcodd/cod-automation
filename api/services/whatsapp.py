@@ -13,6 +13,13 @@ def _safe_text(value: object, fallback: str = "-") -> str:
     return text if text else fallback
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _build_order_template(order: dict) -> dict:
     template_name = _safe_text(
         os.getenv("META_ORDER_TEMPLATE_NAME"),
@@ -22,6 +29,13 @@ def _build_order_template(order: dict) -> dict:
         os.getenv("META_ORDER_TEMPLATE_LANG"),
         fallback="en_US",
     )
+
+    # Meta's built-in hello_world template accepts no body components.
+    if template_name == "hello_world":
+        return {
+            "name": template_name,
+            "language": {"code": template_lang},
+        }
 
     customer = _safe_text(order.get("customer"), fallback="Customer")
     order_name = _safe_text(order.get("order_name") or order.get("order_id"))
@@ -48,12 +62,34 @@ def _build_order_template(order: dict) -> dict:
     }
 
 
-async def _post_message(payload: dict) -> tuple[bool, str]:
+def _build_fallback_template() -> dict:
+    fallback_name = _safe_text(
+        os.getenv("META_FALLBACK_TEMPLATE_NAME"),
+        fallback="hello_world",
+    )
+    lang = _safe_text(
+        os.getenv("META_ORDER_TEMPLATE_LANG"),
+        fallback="en_US",
+    )
+    return {
+        "name": fallback_name,
+        "language": {"code": lang},
+    }
+
+
+def _template_missing_error(status_code: int, body_text: str) -> bool:
+    if status_code != 404:
+        return False
+    lowered = body_text.lower()
+    return "132001" in lowered or "template name does not exist" in lowered
+
+
+async def _post_message(payload: dict) -> tuple[bool, int, str]:
     token = os.getenv("META_WHATSAPP_TOKEN")
     phone_id = os.getenv("META_PHONE_NUMBER_ID")
 
     if not token or not phone_id:
-        return False, "Missing META_WHATSAPP_TOKEN or META_PHONE_NUMBER_ID"
+        return False, 0, "Missing META_WHATSAPP_TOKEN or META_PHONE_NUMBER_ID"
 
     try:
         async with httpx.AsyncClient(timeout=_meta_timeout()) as client:
@@ -65,11 +101,11 @@ async def _post_message(payload: dict) -> tuple[bool, str]:
                 },
                 json=payload,
             )
-        return response.status_code == 200, f"{response.status_code} {response.text}"
+        return response.status_code == 200, response.status_code, response.text
     except httpx.TimeoutException as e:
-        return False, f"timeout: {e}"
+        return False, 0, f"timeout: {e}"
     except Exception as e:
-        return False, f"error: {e}"
+        return False, 0, f"error: {e}"
 
 
 async def send_confirmation(phone: str, order: dict) -> bool:
@@ -79,9 +115,23 @@ async def send_confirmation(phone: str, order: dict) -> bool:
         "type": "template",
         "template": _build_order_template(order),
     }
-    ok, details = await _post_message(payload)
-    print(f"WhatsApp template response: {details}")
-    return ok
+    ok, status_code, body_text = await _post_message(payload)
+    print(f"WhatsApp template response: {status_code} {body_text}")
+    if ok:
+        return True
+
+    if _env_flag("META_TEMPLATE_FALLBACK_ENABLED", True) and _template_missing_error(status_code, body_text):
+        fallback_payload = {
+            "messaging_product": "whatsapp",
+            "to": phone,
+            "type": "template",
+            "template": _build_fallback_template(),
+        }
+        fb_ok, fb_status, fb_text = await _post_message(fallback_payload)
+        print(f"WhatsApp fallback template response: {fb_status} {fb_text}")
+        return fb_ok
+
+    return False
 
 
 async def send_message(phone: str, text: str) -> bool:
@@ -91,6 +141,6 @@ async def send_message(phone: str, text: str) -> bool:
         "type": "text",
         "text": {"body": text},
     }
-    ok, details = await _post_message(payload)
-    print(f"WhatsApp text response: {details}")
+    ok, status_code, body_text = await _post_message(payload)
+    print(f"WhatsApp text response: {status_code} {body_text}")
     return ok

@@ -280,8 +280,11 @@ async def receive_order(
         return {"status": "error", "reason": str(e)}
 
     try:
-        await send_confirmation(order_data["phone"], order_data)
-        print("Step 5: WhatsApp sent")
+        sent = await send_confirmation(order_data["phone"], order_data)
+        if sent:
+            print("Step 5: WhatsApp sent")
+        else:
+            print("Step 5: WhatsApp send failed")
     except Exception as e:
         print(f"WhatsApp failed: {e}")
 

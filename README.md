@@ -52,6 +52,8 @@ cp .env.example .env
 - Copy Token + Phone Number ID and set template vars in `.env`:
   - `META_ORDER_TEMPLATE_NAME=cod_order_confirmation`
   - `META_ORDER_TEMPLATE_LANG=en_US`
+  - `META_TEMPLATE_FALLBACK_ENABLED=true`
+  - `META_FALLBACK_TEMPLATE_NAME=hello_world` (for testing only)
 
 ### 5. Shopify Webhook
 - In Shopify admin → Settings → Notifications → Webhooks
