@@ -1,6 +1,5 @@
 import os
-from fastapi import APIRouter, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Request
 from api.db.supabase import get_supabase
 from api.services.whatsapp import send_message
 from api.services.shopify import confirm_order, cancel_order
@@ -31,21 +30,17 @@ def parse_reply(text: str) -> str | None:
 
 
 @router.get("/reply")
-async def verify_webhook(
-    hub_mode: str | None = Query(default=None, alias="hub.mode"),
-    hub_challenge: str | None = Query(default=None, alias="hub.challenge"),
-    hub_verify_token: str | None = Query(default=None, alias="hub.verify_token"),
-):
-    """Meta calls this GET to verify the webhook URL."""
-    verify_token = os.getenv("META_VERIFY_TOKEN")
-    if (
-        hub_mode == "subscribe"
-        and verify_token
-        and hub_verify_token == verify_token
-        and hub_challenge
-    ):
-        return PlainTextResponse(content=hub_challenge, status_code=200)
-    return PlainTextResponse(content="verification failed", status_code=403)
+async def verify_webhook(request: Request):
+    params = request.query_params
+
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+
+    if mode == "subscribe" and token == os.getenv("META_VERIFY_TOKEN"):
+        return int(challenge)
+
+    return {"error": "verification failed"}
 
 
 @router.post("/reply")
