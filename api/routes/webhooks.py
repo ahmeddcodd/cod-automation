@@ -32,7 +32,7 @@ def _insert_order_record(order_data: dict) -> None:
         "currency":    order_data["currency"],
         "risk_score":  order_data["risk_score"],
         "risk_flags":  order_data["risk_flags"],
-        "status":      "pending",
+        "status":      order_data.get("status", "pending"),
     }).execute()
 
 
@@ -55,6 +55,39 @@ def _extract_gateway_text(order: dict) -> str:
             values.append(company.strip().lower())
 
     return " | ".join(values)
+
+
+def _normalize_phone(value: str) -> str:
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    if digits.startswith("00"):
+        digits = digits[2:]
+    # Common PK local format 03XXXXXXXXX -> convert to 92XXXXXXXXXX
+    if len(digits) == 11 and digits.startswith("03"):
+        digits = "92" + digits[1:]
+    return digits
+
+
+def _extract_phone(order: dict) -> str:
+    billing = order.get("billing_address") if isinstance(order.get("billing_address"), dict) else {}
+    shipping = order.get("shipping_address") if isinstance(order.get("shipping_address"), dict) else {}
+    customer = order.get("customer") if isinstance(order.get("customer"), dict) else {}
+    default_address = customer.get("default_address") if isinstance(customer.get("default_address"), dict) else {}
+
+    candidates = [
+        order.get("phone"),
+        billing.get("phone"),
+        shipping.get("phone"),
+        customer.get("phone"),
+        default_address.get("phone"),
+    ]
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        normalized = _normalize_phone(str(candidate).strip())
+        if len(normalized) >= 10:
+            return normalized
+    return ""
 
 
 @router.post("/shopify/order")
@@ -89,11 +122,8 @@ async def receive_order(
     if not is_cod:
         return {"status": "skipped", "reason": "not a COD order"}
 
-    billing = order.get("billing_address") or {}
-    if not isinstance(billing, dict):
-        billing = {}
-
-    phone = str(order.get("phone") or billing.get("phone") or "").strip()
+    billing = order.get("billing_address") if isinstance(order.get("billing_address"), dict) else {}
+    phone = _extract_phone(order)
     customer_name = str(billing.get("first_name") or "Customer").strip() or "Customer"
     items = order.get("line_items", [])
 
@@ -113,10 +143,26 @@ async def receive_order(
         "quantity":    items[0]["quantity"] if items else 1,
         "amount":      order.get("total_price", "0"),
         "currency":    order.get("currency", "PKR"),
+        "status":      "pending",
     }
 
     if not order_data["phone"] or len(order_data["phone"]) < 10:
-        return {"status": "skipped", "reason": "missing phone number"}
+        print("Step 1.7: Missing phone in Shopify payload; saving order as skipped")
+        order_data["phone"] = f"missing-{order_data['order_id']}"
+        order_data["status"] = "skipped_missing_phone"
+        order_data["risk_score"] = 0.0
+        order_data["risk_flags"] = ["missing_phone"]
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_insert_order_record, order_data), timeout=8)
+            print("Step 1.8: Order saved to Supabase (skipped_missing_phone)")
+        except Exception as e:
+            print(f"Step 1.9: Failed to save skipped order: {e}")
+            return {"status": "error", "reason": str(e)}
+        return {
+            "status": "skipped",
+            "reason": "missing phone number",
+            "order_id": order_data["order_id"],
+        }
 
     print(f"Step 2: Running risk check for {order_data['phone']}")
 
