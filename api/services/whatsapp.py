@@ -5,9 +5,25 @@ META_API_URL = "https://graph.facebook.com/v18.0"
 
 
 async def send_confirmation(phone: str, order: dict) -> bool:
-    """Send the initial COD confirmation request to customer."""
-    message = _build_message(order)
-    return await send_message(phone, message)
+    token    = os.getenv("META_WHATSAPP_TOKEN")
+    phone_id = os.getenv("META_PHONE_NUMBER_ID")
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{META_API_URL}/{phone_id}/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "template",
+                "template": {
+                    "name": "hello_world",
+                    "language": {"code": "en_US"}
+                }
+            },
+            timeout=10,
+        )
+    return response.status_code == 200
 
 
 async def send_message(phone: str, text: str) -> bool:
