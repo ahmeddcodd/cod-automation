@@ -89,9 +89,13 @@ async def receive_order(
     if not is_cod:
         return {"status": "skipped", "reason": "not a COD order"}
 
-    billing  = order.get("billing_address") or {}
-    phone    = order.get("phone") or billing.get("phone", "")
-    items    = order.get("line_items", [])
+    billing = order.get("billing_address") or {}
+    if not isinstance(billing, dict):
+        billing = {}
+
+    phone = str(order.get("phone") or billing.get("phone") or "").strip()
+    customer_name = str(billing.get("first_name") or "Customer").strip() or "Customer"
+    items = order.get("line_items", [])
 
     merchant_id = (
         (x_merchant_id or "").strip()
@@ -103,8 +107,8 @@ async def receive_order(
         "order_id":    str(order["id"]),
         "order_name":  order.get("name", ""),
         "merchant_id": merchant_id,
-        "phone":       phone.strip(),
-        "customer":    billing.get("first_name", "Customer"),
+        "phone":       phone,
+        "customer":    customer_name,
         "product":     items[0]["name"] if items else "your order",
         "quantity":    items[0]["quantity"] if items else 1,
         "amount":      order.get("total_price", "0"),
