@@ -36,6 +36,27 @@ def _insert_order_record(order_data: dict) -> None:
     }).execute()
 
 
+def _extract_gateway_text(order: dict) -> str:
+    values: list[str] = []
+
+    for key in ("payment_gateway", "gateway", "payment_method", "processing_method"):
+        value = order.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip().lower())
+
+    gateway_names = order.get("payment_gateway_names")
+    if isinstance(gateway_names, list):
+        values.extend(str(v).strip().lower() for v in gateway_names if str(v).strip())
+
+    payment_details = order.get("payment_details")
+    if isinstance(payment_details, dict):
+        company = payment_details.get("credit_card_company")
+        if isinstance(company, str) and company.strip():
+            values.append(company.strip().lower())
+
+    return " | ".join(values)
+
+
 @router.post("/shopify/order")
 async def receive_order(
     request: Request,
@@ -55,21 +76,33 @@ async def receive_order(
 
     print("Step 1: Order received")
 
-    gateway = order.get("payment_gateway", "").lower()
-    print(f"Step 1.5: Payment gateway = '{gateway}'")
+    gateway_text = _extract_gateway_text(order)
+    print(f"Step 1.5: Payment gateway = '{gateway_text}'")
 
     # Only handle COD orders
-    if "cod" not in gateway and "cash" not in gateway:
+    is_cod = any(token in gateway_text for token in ("cod", "cash", "manual"))
+    if not gateway_text:
+        # Some Shopify payload variants omit gateway fields; don't skip blindly.
+        print("Step 1.6: Gateway missing in payload; continuing as COD candidate")
+        is_cod = True
+
+    if not is_cod:
         return {"status": "skipped", "reason": "not a COD order"}
 
     billing  = order.get("billing_address") or {}
     phone    = order.get("phone") or billing.get("phone", "")
     items    = order.get("line_items", [])
 
+    merchant_id = (
+        (x_merchant_id or "").strip()
+        or (os.getenv("DEFAULT_MERCHANT_ID", "").strip() or None)
+        or (str(order.get("shop_id", "")).strip() or None)
+    )
+
     order_data = {
         "order_id":    str(order["id"]),
         "order_name":  order.get("name", ""),
-        "merchant_id": x_merchant_id or str(order.get("shop_id", "")),
+        "merchant_id": merchant_id,
         "phone":       phone.strip(),
         "customer":    billing.get("first_name", "Customer"),
         "product":     items[0]["name"] if items else "your order",
@@ -106,8 +139,19 @@ async def receive_order(
         print("Supabase insert timed out")
         return {"status": "error", "reason": "supabase insert timeout"}
     except Exception as e:
-        print(f"Supabase insert failed: {e}")
-        return {"status": "error", "reason": str(e)}
+        message = str(e)
+        if order_data.get("merchant_id") and "foreign key" in message.lower():
+            try:
+                print("Step 4.1: Merchant FK failed, retrying with null merchant_id")
+                order_data["merchant_id"] = None
+                await asyncio.wait_for(asyncio.to_thread(_insert_order_record, order_data), timeout=8)
+                print("Step 4.2: Order saved to Supabase with null merchant_id")
+            except Exception as retry_error:
+                print(f"Supabase retry failed: {retry_error}")
+                return {"status": "error", "reason": str(retry_error)}
+        else:
+            print(f"Supabase insert failed: {e}")
+            return {"status": "error", "reason": message}
 
     # Send WhatsApp
     try:
