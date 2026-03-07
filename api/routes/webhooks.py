@@ -55,8 +55,10 @@ async def receive_order(
 
     print("Step 1: Order received")
 
-    # Only handle COD orders
     gateway = order.get("payment_gateway", "").lower()
+    print(f"Step 1.5: Payment gateway = '{gateway}'")
+
+    # Only handle COD orders
     if "cod" not in gateway and "cash" not in gateway:
         return {"status": "skipped", "reason": "not a COD order"}
 
