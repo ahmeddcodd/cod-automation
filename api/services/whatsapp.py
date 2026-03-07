@@ -21,14 +21,8 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _build_order_template(order: dict) -> dict:
-    template_name = _safe_text(
-        os.getenv("META_ORDER_TEMPLATE_NAME"),
-        fallback="cod_order_confirmation",
-    )
-    template_lang = _safe_text(
-        os.getenv("META_ORDER_TEMPLATE_LANG"),
-        fallback="en_US",
-    )
+    template_name = os.getenv("META_ORDER_TEMPLATE_NAME", "hello_world")
+    template_lang = os.getenv("META_ORDER_TEMPLATE_LANG", "en_US")
 
     # Meta's built-in hello_world template accepts no body components.
     if template_name == "hello_world":
@@ -37,24 +31,28 @@ def _build_order_template(order: dict) -> dict:
             "language": {"code": template_lang},
         }
 
-    customer = _safe_text(order.get("customer"), fallback="Customer")
-    order_name = _safe_text(order.get("order_name") or order.get("order_id"))
-    product = _safe_text(order.get("product"), fallback="your order")
-    quantity = _safe_text(order.get("quantity"), fallback="1")
-    amount = _safe_text(order.get("amount"), fallback="0")
-    currency = _safe_text(order.get("currency"), fallback="PKR")
+    store_name = order.get("store_name", "Our Store")
+    customer   = order.get("customer", "Customer")
+    product    = order.get("product", "your order")
+    amount     = order.get("amount", "0")
+    currency   = order.get("currency", "PKR")
 
     return {
         "name": template_name,
         "language": {"code": template_lang},
         "components": [
             {
+                "type": "header",
+                "parameters": [
+                    {"type": "text", "text": store_name}
+                ]
+            }
+            ,
+            {
                 "type": "body",
                 "parameters": [
                     {"type": "text", "text": customer},
-                    {"type": "text", "text": order_name},
                     {"type": "text", "text": product},
-                    {"type": "text", "text": quantity},
                     {"type": "text", "text": f"{currency} {amount}"},
                 ],
             }

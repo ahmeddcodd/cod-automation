@@ -238,6 +238,20 @@ async def receive_order(
     except ValueError as e:
         return {"status": "error", "reason": str(e)}
 
+    # Add store_name for template header
+    try:
+        supabase = get_supabase()
+        merchant = (
+            supabase.table("merchants")
+            .select("store_name")
+            .eq("merchant_id", order_data["merchant_id"])
+            .execute()
+        )
+        store_name = merchant.data[0]["store_name"] if merchant.data else "Our Store"
+        order_data["store_name"] = store_name
+    except Exception:
+        order_data["store_name"] = "Our Store"
+
     if not order_data["phone"] or len(order_data["phone"]) < 10:
         print("Step 1.7: Missing phone; saving as skipped_missing_phone")
         order_data["phone"] = f"missing-{order_data['order_id']}"
