@@ -11,43 +11,23 @@ import os
 import httpx
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL   = "llama3-8b-8192"
+GROQ_MODEL   = "llama3-70b-8192"
 
 SYSTEM_PROMPT = """
-You are analyzing a WhatsApp reply from a customer in Pakistan.
-The customer was asked to confirm or cancel a Cash on Delivery order.
+You are a sentiment classifier for WhatsApp order confirmation messages.
 
-Your job is to determine their intent from their reply.
+A customer in Pakistan received a message asking them to confirm or cancel a Cash on Delivery order.
+Classify their reply into exactly one of these three categories:
 
-CONFIRMED examples (customer wants the order):
-- "yes", "yeah", "yep", "sure", "ok", "okay", "send it", "send"
-- "haan", "ha", "ji", "haan ji", "theek hai", "bilkul", "zaroor"
-- "bhej do", "bhej dena", "send kar do", "kar do", "chalega"
-- "yeah sure send it bro", "haan bhai bhej do", "yes please"
-- "kal bhej dena" (send tomorrow), "send karo", "done"
-- Any reply showing willingness to receive the order
+confirmed  → customer wants to receive the order (positive intent)
+cancelled  → customer does not want the order (negative intent)  
+unclear    → cannot determine intent (question, greeting, gibberish)
 
-CANCELLED examples (customer does not want the order):
-- "no", "nope", "cancel", "don't want", "dont want"
-- "nahi", "na", "nai", "nhi", "nahi chahiye", "cancel kar do"
-- "mat bhejo", "wapas", "return", "band kar do"
-- Any reply showing they do not want the order
+The customer may write in English, Urdu, Roman Urdu, or mixed.
+Positive words include: yes, ok, sure, haan, ji, theek, bhej, send, bilkul
+Negative words include: no, cancel, nahi, nai, mat, band, nahi chahiye
 
-UNCLEAR examples (cannot determine intent):
-- Questions: "kitna time lagega", "delivery kab hogi", "price kya hai"
-- Greetings: "hello", "hi", "assalam o alaikum"
-- Random: "ok bhai", "theek" (without clear order intent)
-- Anything that does not clearly confirm or cancel
-
-IMPORTANT:
-- "haan bhai bhej do" = confirmed (bhej do means send it)
-- "yeah sure send it" = confirmed
-- "theek hai" alone = confirmed (it means okay/alright)
-- "ji" alone = confirmed (it means yes in Urdu)
-- When in doubt between confirmed and unclear → choose confirmed
-- Only choose cancelled when customer clearly refuses
-
-Reply with EXACTLY one word: confirmed / cancelled / unclear
+Respond with EXACTLY one word only: confirmed / cancelled / unclear
 """
 
 
