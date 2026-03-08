@@ -1,10 +1,14 @@
 """
-COD Automation Flow — Phase 1
+COD Automation Flow — Phase 2
 
-Simple, reliable, no AI involved:
-  1. Wait for customer reply (20 mins default)
-  2. Check if they replied
-  3. If no reply → auto cancel on Shopify
+Adds smart follow-up reminder before auto-cancelling:
+  1. Send WhatsApp confirmation
+  2. Wait 15 minutes
+  3. Check if replied
+  4. If no reply → send Urdu + English reminder
+  5. Wait 5 more minutes
+  6. Check again
+  7. If still no reply → auto cancel
 """
 
 import os
@@ -25,49 +29,85 @@ inngest_client = Inngest(
     retries=2,
 )
 async def wait_and_cancel(ctx, step):
-    order      = ctx.event["data"]
-    order_id   = order["order_id"]
-    phone      = order["phone"]
+    order       = ctx.event["data"]
+    order_id    = order["order_id"]
+    phone       = order["phone"]
     merchant_id = order["merchant_id"]
+    product     = order.get("product", "your order")
+    customer    = order.get("customer", "Customer")
 
-    # ── Get merchant's configured wait time (default 20 mins) ────────────
+    # ── Get merchant wait config ──────────────────────────────────────────
     wait_mins = await step.run(
         "get-wait-minutes",
         lambda: _get_wait_minutes(merchant_id)
     )
 
-    # ── Wait ─────────────────────────────────────────────────────────────
-    await step.sleep("wait-for-customer-reply", f"{wait_mins}m")
+    # Split wait into two windows:
+    # First wait = 75% of total time → then reminder
+    # Second wait = 25% of total time → then cancel
+    first_wait  = max(1, int(wait_mins * 0.75))
+    second_wait = max(1, wait_mins - first_wait)
 
-    # ── Check if customer replied during the wait ────────────────────────
-    current_status = await step.run(
-        "check-order-status",
+    # ── Step 1: Wait first window ─────────────────────────────────────────
+    await step.sleep("first-wait", f"{first_wait}m")
+
+    # ── Step 2: Check if already replied ─────────────────────────────────
+    status_after_first = await step.run(
+        "check-status-after-first-wait",
         lambda: _get_order_status(order_id)
     )
 
-    # Already handled via WhatsApp reply — nothing to do
-    if current_status in ("confirmed", "cancelled"):
+    if status_after_first in ("confirmed", "cancelled"):
         return {"status": "already_handled", "via": "whatsapp_reply"}
 
-    # ── No reply — auto cancel ────────────────────────────────────────────
+    # ── Step 3: Send reminder in English + Urdu ───────────────────────────
+    async def send_reminder():
+        await send_message(
+            phone,
+            f"⏰ *Reminder / Yaad Dihani*\n\n"
+            f"Aapka order abhi pending hai:\n"
+            f"📦 *{product}*\n\n"
+            f"Kripya abhi reply karein:\n"
+            f"✅ *YES* — Confirm\n"
+            f"❌ *NO* — Cancel\n\n"
+            f"Your order is still pending. Please reply YES or NO.\n"
+            f"⚠️ {second_wait} minute mein automatically cancel ho jayega."
+        )
+
+    await step.run("send-reminder", send_reminder)
+
+    # ── Step 4: Wait second window ────────────────────────────────────────
+    await step.sleep("second-wait", f"{second_wait}m")
+
+    # ── Step 5: Final status check ────────────────────────────────────────
+    final_status = await step.run(
+        "final-status-check",
+        lambda: _get_order_status(order_id)
+    )
+
+    if final_status in ("confirmed", "cancelled"):
+        return {"status": "already_handled", "via": "whatsapp_reply_after_reminder"}
+
+    # ── Step 6: Auto cancel ───────────────────────────────────────────────
     async def do_cancel():
         await cancel_order(order_id, merchant_id)
 
     await step.run("auto-cancel-order", do_cancel)
 
-    # Update DB
     def do_db_update():
         _mark_auto_cancelled(order_id)
 
     await step.run("update-db-cancelled", do_db_update)
 
-    # Notify customer
+    # ── Step 7: Notify customer of cancellation ───────────────────────────
     async def do_notify():
         await send_message(
             phone,
-            f"⚠️ Your order *{order['product']}* has been *automatically cancelled* "
-            f"as we didn't receive a confirmation from you.\n\n"
-            f"You can place a new order anytime! 🛍️"
+            f"❌ *Order Cancelled / Order Cancel Ho Gaya*\n\n"
+            f"Aapka order *{product}* cancel kar diya gaya hai\n"
+            f"kyunki humein koi jawab nahi mila.\n\n"
+            f"Your order was automatically cancelled as we received no reply.\n\n"
+            f"Dobara order karne ke liye hume message karein. 🛍️"
         )
 
     await step.run("notify-customer", do_notify)
@@ -79,7 +119,7 @@ async def wait_and_cancel(ctx, step):
 
 def _get_wait_minutes(merchant_id: str) -> int:
     supabase = get_supabase()
-    result = (
+    result   = (
         supabase.table("merchants")
         .select("wait_minutes")
         .eq("merchant_id", merchant_id)
@@ -92,7 +132,7 @@ def _get_wait_minutes(merchant_id: str) -> int:
 
 def _get_order_status(order_id: str) -> str | None:
     supabase = get_supabase()
-    result = (
+    result   = (
         supabase.table("orders")
         .select("status")
         .eq("order_id", order_id)
