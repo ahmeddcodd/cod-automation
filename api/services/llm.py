@@ -1,17 +1,4 @@
-"""
-LLM Reply Parser — Phase 2
-
-Uses Groq + Llama 3 (free tier) to understand customer replies
-in any language including English, Urdu (Roman + script), and mixed.
-
-Returns: confirmed / cancelled / unclear
-"""
-
-import os
-import httpx
-
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL   = "llama3-70b-8192"
+GROQ_MODEL = "llama3-70b-8192"
 
 SYSTEM_PROMPT = """
 You are a sentiment classifier for WhatsApp order confirmation messages.
@@ -20,27 +7,62 @@ A customer in Pakistan received a message asking them to confirm or cancel a Cas
 Classify their reply into exactly one of these three categories:
 
 confirmed  → customer wants to receive the order (positive intent)
-cancelled  → customer does not want the order (negative intent)  
+cancelled  → customer does not want the order (negative intent)
 unclear    → cannot determine intent (question, greeting, gibberish)
 
 The customer may write in English, Urdu, Roman Urdu, or mixed.
-Positive words include: yes, ok, sure, haan, ji, theek, bhej, send, bilkul
-Negative words include: no, cancel, nahi, nai, mat, band, nahi chahiye
+Positive words include: yes, ok, sure, haan, ji, theek, bhej, send, bilkul, yeah, yep, alright, fine, cool, sounds good
+Negative words include: no, cancel, nahi, nai, mat, band, nahi chahiye, don't, nope, never
+
+If the message contains ANY positive word alongside "send", "it", "bro", "yar", "please" → it is confirmed.
 
 Respond with EXACTLY one word only: confirmed / cancelled / unclear
 """
 
 
+def _normalize_slang(text: str) -> str:
+    """
+    Normalize casual English slang to cleaner phrases
+    before sending to LLM.
+    """
+    replacements = {
+        "yeah sure":     "yes",
+        "yeah":          "yes",
+        "yep":           "yes",
+        "yup":           "yes",
+        "send it":       "confirm",
+        "send it bro":   "confirm",
+        "send it yar":   "confirm",
+        "go ahead":      "confirm",
+        "sounds good":   "confirm",
+        "alright":       "yes",
+        "fine":          "yes",
+        "cool":          "yes",
+        "dont want":     "cancel",
+        "don't want":    "cancel",
+        "not interested": "cancel",
+        "forget it":     "cancel",
+        "never mind":    "cancel",
+    }
+
+    cleaned = text.lower().strip()
+    for slang, normalized in replacements.items():
+        if slang in cleaned:
+            cleaned = cleaned.replace(slang, normalized)
+    return cleaned
+
+
 async def parse_reply_with_llm(customer_reply: str) -> str:
-    """
-    Use Groq to understand a customer's WhatsApp reply.
-    Returns: confirmed / cancelled / unclear
-    """
     api_key = os.getenv("GROQ_API_KEY")
+
+    # Normalize slang first
+    normalized = _normalize_slang(customer_reply)
+    if normalized != customer_reply.lower():
+        print(f"Normalized '{customer_reply}' → '{normalized}'")
 
     if not api_key:
         print("GROQ_API_KEY missing — falling back to basic keyword parser")
-        return _basic_fallback(customer_reply)
+        return _basic_fallback(normalized)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -54,7 +76,7 @@ async def parse_reply_with_llm(customer_reply: str) -> str:
                     "model":    GROQ_MODEL,
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user",   "content": f'Customer reply: "{customer_reply}"'},
+                        {"role": "user",   "content": f'Customer reply: "{normalized}"'},
                     ],
                     "max_tokens":  5,
                     "temperature": 0,
@@ -75,16 +97,11 @@ async def parse_reply_with_llm(customer_reply: str) -> str:
 
     except Exception as e:
         print(f"Groq LLM failed: {e} — falling back to basic keyword parser")
-        return _basic_fallback(customer_reply)
+        return _basic_fallback(normalized)
 
 
 def _basic_fallback(text: str) -> str:
-    """
-    Minimal fallback ONLY used when Groq is completely unavailable.
-    Just the most universal signals — LLM handles everything else.
-    """
     cleaned = text.lower().strip()
-
     if any(w in cleaned for w in ["yes", "confirm", "ok", "haan", "ji", "1"]):
         return "confirmed"
     if any(w in cleaned for w in ["no", "cancel", "nahi", "nai", "2"]):
