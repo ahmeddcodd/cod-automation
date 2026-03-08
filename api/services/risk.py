@@ -220,10 +220,13 @@ async def _check_order_history(phone: str, current_order_id: str) -> dict[str, f
 # ── Phone validation helpers ───────────────────────────────────────────────
 
 def _is_valid_pk_mobile(digits: str) -> bool:
-    """Pakistani mobile: exactly 11 digits, starts with a known carrier prefix."""
-    if len(digits) != 11:
-        return False
-    return digits[:4] in PK_MOBILE_PREFIXES
+    """Accepts both 03XXXXXXXXX (11 digits) and 923XXXXXXXXX (12 digits)."""
+    if len(digits) == 11 and digits[:4] in PK_MOBILE_PREFIXES:
+        return True
+    if len(digits) == 12 and digits.startswith("92"):
+        local = "0" + digits[2:]  # convert 923001234567 -> 03001234567
+        return local[:4] in PK_MOBILE_PREFIXES
+    return False
 
 
 def _has_repeated_digits(digits: str, min_run: int = 6) -> bool:

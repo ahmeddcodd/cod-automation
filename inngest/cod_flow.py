@@ -50,27 +50,27 @@ async def wait_and_cancel(ctx, step):
         return {"status": "already_handled", "via": "whatsapp_reply"}
 
     # ── No reply — auto cancel ────────────────────────────────────────────
-    await step.run(
-        "auto-cancel-order",
-        lambda: cancel_order(order_id, merchant_id)
-    )
+    async def do_cancel():
+        await cancel_order(order_id, merchant_id)
+
+    await step.run("auto-cancel-order", do_cancel)
 
     # Update DB
-    await step.run(
-        "update-db-cancelled",
-        lambda: _mark_auto_cancelled(order_id)
-    )
+    def do_db_update():
+        _mark_auto_cancelled(order_id)
+
+    await step.run("update-db-cancelled", do_db_update)
 
     # Notify customer
-    await step.run(
-        "notify-customer",
-        lambda: send_message(
+    async def do_notify():
+        await send_message(
             phone,
             f"⚠️ Your order *{order['product']}* has been *automatically cancelled* "
             f"as we didn't receive a confirmation from you.\n\n"
             f"You can place a new order anytime! 🛍️"
         )
-    )
+
+    await step.run("notify-customer", do_notify)
 
     return {"status": "auto_cancelled", "order_id": order_id}
 
