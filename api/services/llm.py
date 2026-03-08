@@ -19,15 +19,35 @@ The customer was asked to confirm or cancel a Cash on Delivery order.
 
 Your job is to determine their intent from their reply.
 
-The customer may reply in English, Roman Urdu, Urdu script, or a mix.
+CONFIRMED examples (customer wants the order):
+- "yes", "yeah", "yep", "sure", "ok", "okay", "send it", "send"
+- "haan", "ha", "ji", "haan ji", "theek hai", "bilkul", "zaroor"
+- "bhej do", "bhej dena", "send kar do", "kar do", "chalega"
+- "yeah sure send it bro", "haan bhai bhej do", "yes please"
+- "kal bhej dena" (send tomorrow), "send karo", "done"
+- Any reply showing willingness to receive the order
 
-Rules:
-- If the customer clearly wants the order → reply ONLY with: confirmed
-- If the customer clearly does not want the order → reply ONLY with: cancelled
-- If the reply is a question, greeting, or unclear → reply ONLY with: unclear
+CANCELLED examples (customer does not want the order):
+- "no", "nope", "cancel", "don't want", "dont want"
+- "nahi", "na", "nai", "nhi", "nahi chahiye", "cancel kar do"
+- "mat bhejo", "wapas", "return", "band kar do"
+- Any reply showing they do not want the order
+
+UNCLEAR examples (cannot determine intent):
+- Questions: "kitna time lagega", "delivery kab hogi", "price kya hai"
+- Greetings: "hello", "hi", "assalam o alaikum"
+- Random: "ok bhai", "theek" (without clear order intent)
+- Anything that does not clearly confirm or cancel
+
+IMPORTANT:
+- "haan bhai bhej do" = confirmed (bhej do means send it)
+- "yeah sure send it" = confirmed
+- "theek hai" alone = confirmed (it means okay/alright)
+- "ji" alone = confirmed (it means yes in Urdu)
+- When in doubt between confirmed and unclear → choose confirmed
+- Only choose cancelled when customer clearly refuses
 
 Reply with EXACTLY one word: confirmed / cancelled / unclear
-Do NOT explain. Do NOT add punctuation. Just the one word.
 """
 
 
