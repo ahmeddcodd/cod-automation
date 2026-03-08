@@ -8,6 +8,32 @@ from api.services.llm import parse_reply_with_llm
 router = APIRouter()
 
 
+def _normalize_phone(value: str) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if digits.startswith("00"):
+        digits = digits[2:]
+    return digits
+
+
+def _phone_variants(value: str) -> list[str]:
+    digits = _normalize_phone(value)
+    variants: list[str] = []
+
+    def _add(candidate: str) -> None:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+
+    _add(value)
+    _add(digits)
+    if len(digits) == 11 and digits.startswith("03"):
+        _add("92" + digits[1:])
+    if len(digits) == 12 and digits.startswith("92"):
+        _add("0" + digits[2:])
+
+    return variants
+
+
 @router.get("/reply")
 async def verify_webhook(request: Request):
     """Meta calls this GET to verify the webhook URL."""
@@ -52,24 +78,29 @@ async def handle_reply(request: Request):
 
     # Find most recent pending order for this phone
     supabase = get_supabase()
-    result = (
-        supabase.table("orders")
-        .select("*")
-        .eq("phone", phone)
-        .eq("status", "pending")
-        .order("created_at", desc=True)
-        .limit(1)
-        .execute()
-    )
+    pending_order = None
+    for candidate_phone in _phone_variants(phone):
+        result = (
+            supabase.table("orders")
+            .select("*")
+            .eq("phone", candidate_phone)
+            .eq("status", "pending")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            pending_order = result.data[0]
+            break
 
-    if not result.data:
+    if not pending_order:
         return {"status": "no pending order found"}
 
-    order    = result.data[0]
+    order = pending_order
     order_id = order["order_id"]
 
-    # Phase 2 — LLM parses the reply
-    reply = await parse_reply_with_llm(text)
+    # Phase 2 — LLM parses the reply using order + risk context.
+    reply = await parse_reply_with_llm(text, order)
     print(f"LLM decision for order {order_id}: {reply}")
 
     if reply == "confirmed":
