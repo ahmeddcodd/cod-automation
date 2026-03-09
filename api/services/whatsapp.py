@@ -4,9 +4,8 @@ import httpx
 META_API_URL = "https://graph.facebook.com/v22.0"
 DEFAULT_ORDER_TEMPLATE_NAME = "_cod_order_confirmation"
 DEFAULT_TEMPLATE_LANG = "en"
+DEFAULT_TEMPLATE_LANG_VARIANTS = ("en", "en_US", "en_GB")
 TEMPLATE_NAME_ALIASES = {
-    "_cod_order_confirmation_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
-    "cod_order_confirmation_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
     "_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
     "cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
     "hello_world": DEFAULT_ORDER_TEMPLATE_NAME,
@@ -34,6 +33,21 @@ def _resolve_template_name(raw_name: object, fallback: str) -> str:
     return TEMPLATE_NAME_ALIASES.get(name.strip().lower(), name.strip())
 
 
+def _normalize_template_lang(raw_lang: object, fallback: str = DEFAULT_TEMPLATE_LANG) -> str:
+    value = _safe_text(raw_lang, fallback=fallback).strip()
+    lowered = value.lower().replace("-", "_")
+
+    lang_aliases = {
+        "english": "en",
+        "en": "en",
+        "en_us": "en_US",
+        "enus": "en_US",
+        "en_gb": "en_GB",
+        "engb": "en_GB",
+    }
+    return lang_aliases.get(lowered, value)
+
+
 def _template_name_variants(base_name: str) -> list[str]:
     clean = str(base_name or "").strip()
     variants: list[str] = []
@@ -54,11 +68,13 @@ def _template_lang_variants() -> list[str]:
     variants: list[str] = []
 
     def _add(value: str) -> None:
-        value = str(value or "").strip()
+        value = _normalize_template_lang(value, fallback=DEFAULT_TEMPLATE_LANG)
         if value and value not in variants:
             variants.append(value)
 
-    _add(_safe_text(os.getenv("META_ORDER_TEMPLATE_LANG"), fallback=DEFAULT_TEMPLATE_LANG))
+    _add(os.getenv("META_ORDER_TEMPLATE_LANG"))
+    for default_lang in DEFAULT_TEMPLATE_LANG_VARIANTS:
+        _add(default_lang)
 
     raw_fallbacks = str(os.getenv("META_ORDER_TEMPLATE_LANG_FALLBACKS") or "")
     for item in raw_fallbacks.split(","):
@@ -79,7 +95,10 @@ def _build_order_template(order: dict) -> dict:
         os.getenv("META_ORDER_TEMPLATE_NAME"),
         fallback=DEFAULT_ORDER_TEMPLATE_NAME,
     )
-    template_lang = _safe_text(os.getenv("META_ORDER_TEMPLATE_LANG"), fallback=DEFAULT_TEMPLATE_LANG)
+    template_lang = _normalize_template_lang(
+        os.getenv("META_ORDER_TEMPLATE_LANG"),
+        fallback=DEFAULT_TEMPLATE_LANG,
+    )
 
     store_name = order.get("store_name", "Our Store")
     customer   = order.get("customer", "Customer")
@@ -115,7 +134,7 @@ def _build_fallback_template() -> dict:
         os.getenv("META_FALLBACK_TEMPLATE_NAME"),
         fallback=DEFAULT_ORDER_TEMPLATE_NAME,
     )
-    lang = _safe_text(
+    lang = _normalize_template_lang(
         os.getenv("META_ORDER_TEMPLATE_LANG"),
         fallback=DEFAULT_TEMPLATE_LANG,
     )
