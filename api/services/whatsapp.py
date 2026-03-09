@@ -2,13 +2,14 @@ import os
 import httpx
 
 META_API_URL = "https://graph.facebook.com/v22.0"
-DEFAULT_ORDER_TEMPLATE_NAME = "_cod_order_confirmation_cod_order_confirmation"
+DEFAULT_ORDER_TEMPLATE_NAME = "_cod_order_confirmation"
+DEFAULT_TEMPLATE_LANG = "en"
 TEMPLATE_NAME_ALIASES = {
-    "hello_world": DEFAULT_ORDER_TEMPLATE_NAME,
-    "cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
-    "_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
-    "cod_order_confirmation_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
     "_cod_order_confirmation_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
+    "cod_order_confirmation_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
+    "_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
+    "cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
+    "hello_world": DEFAULT_ORDER_TEMPLATE_NAME,
 }
 
 
@@ -33,12 +34,52 @@ def _resolve_template_name(raw_name: object, fallback: str) -> str:
     return TEMPLATE_NAME_ALIASES.get(name.strip().lower(), name.strip())
 
 
+def _template_name_variants(base_name: str) -> list[str]:
+    clean = str(base_name or "").strip()
+    variants: list[str] = []
+
+    def _add(value: str) -> None:
+        value = str(value or "").strip()
+        if value and value not in variants:
+            variants.append(value)
+
+    _add(clean)
+    _add(clean.lstrip("_"))
+    if clean and not clean.startswith("_"):
+        _add(f"_{clean}")
+    return variants
+
+
+def _template_lang_variants() -> list[str]:
+    variants: list[str] = []
+
+    def _add(value: str) -> None:
+        value = str(value or "").strip()
+        if value and value not in variants:
+            variants.append(value)
+
+    _add(_safe_text(os.getenv("META_ORDER_TEMPLATE_LANG"), fallback=DEFAULT_TEMPLATE_LANG))
+
+    raw_fallbacks = str(os.getenv("META_ORDER_TEMPLATE_LANG_FALLBACKS") or "")
+    for item in raw_fallbacks.split(","):
+        _add(item)
+
+    return variants
+
+
+def _clone_template_with_name_and_lang(template: dict, name: str, lang: str) -> dict:
+    updated = dict(template)
+    updated["name"] = str(name).strip()
+    updated["language"] = {"code": str(lang).strip()}
+    return updated
+
+
 def _build_order_template(order: dict) -> dict:
     template_name = _resolve_template_name(
         os.getenv("META_ORDER_TEMPLATE_NAME"),
         fallback=DEFAULT_ORDER_TEMPLATE_NAME,
     )
-    template_lang = os.getenv("META_ORDER_TEMPLATE_LANG", "en_US")
+    template_lang = _safe_text(os.getenv("META_ORDER_TEMPLATE_LANG"), fallback=DEFAULT_TEMPLATE_LANG)
 
     store_name = order.get("store_name", "Our Store")
     customer   = order.get("customer", "Customer")
@@ -76,7 +117,7 @@ def _build_fallback_template() -> dict:
     )
     lang = _safe_text(
         os.getenv("META_ORDER_TEMPLATE_LANG"),
-        fallback="en_US",
+        fallback=DEFAULT_TEMPLATE_LANG,
     )
     return {
         "name": fallback_name,
@@ -123,11 +164,47 @@ async def send_confirmation(phone: str, order: dict) -> bool:
         "type": "template",
         "template": selected_template,
     }
-    print(f"WhatsApp primary template selected: {selected_template.get('name')}")
+    print(
+        "WhatsApp primary template selected: "
+        f"{selected_template.get('name')} [{selected_template.get('language', {}).get('code')}]"
+    )
     ok, status_code, body_text = await _post_message(payload)
     print(f"WhatsApp template response: {status_code} {body_text}")
     if ok:
         return True
+
+    if _template_missing_error(status_code, body_text):
+        tried: set[tuple[str, str]] = set()
+        base_name = str(selected_template.get("name") or "")
+        base_lang = str(selected_template.get("language", {}).get("code") or DEFAULT_TEMPLATE_LANG)
+        tried.add((base_name, base_lang))
+
+        for candidate_name in _template_name_variants(base_name):
+            for candidate_lang in _template_lang_variants():
+                key = (candidate_name, candidate_lang)
+                if key in tried:
+                    continue
+                tried.add(key)
+
+                candidate_template = _clone_template_with_name_and_lang(
+                    selected_template,
+                    name=candidate_name,
+                    lang=candidate_lang,
+                )
+                retry_payload = {
+                    "messaging_product": "whatsapp",
+                    "to": phone,
+                    "type": "template",
+                    "template": candidate_template,
+                }
+                print(
+                    "WhatsApp template retry selected: "
+                    f"{candidate_template.get('name')} [{candidate_template.get('language', {}).get('code')}]"
+                )
+                retry_ok, retry_status, retry_body = await _post_message(retry_payload)
+                print(f"WhatsApp template retry response: {retry_status} {retry_body}")
+                if retry_ok:
+                    return True
 
     if _env_flag("META_TEMPLATE_FALLBACK_ENABLED", False) and _template_missing_error(status_code, body_text):
         fallback_template = _build_fallback_template()
