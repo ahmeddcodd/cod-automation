@@ -43,17 +43,18 @@ cp .env.example .env
 - Set webhook URL: `https://your-domain.vercel.app/api/whatsapp/reply`
 - Set verify token to match `META_VERIFY_TOKEN` in your `.env`
 - Subscribe to the `messages` webhook field
-- Create and approve a template named `cod_order_confirmation` with 5 body variables:
+- Create and approve a template named `_cod_order_confirmation_cod_order_confirmation` with 5 body variables:
   1. Customer name
   2. Order name
   3. Product
   4. Quantity
   5. Amount (currency + total)
 - Copy Token + Phone Number ID and set template vars in `.env`:
-  - `META_ORDER_TEMPLATE_NAME=cod_order_confirmation`
+  - `META_ORDER_TEMPLATE_NAME=_cod_order_confirmation_cod_order_confirmation`
   - `META_ORDER_TEMPLATE_LANG=en_US`
-  - `META_TEMPLATE_FALLBACK_ENABLED=true`
-  - `META_FALLBACK_TEMPLATE_NAME=hello_world` (for testing only)
+  - `META_TEMPLATE_FALLBACK_ENABLED=false`
+  - `META_FALLBACK_TEMPLATE_NAME=_cod_order_confirmation_cod_order_confirmation`
+  - If using Vercel, update the same variables in Project Settings and redeploy.
 
 ### 5. Shopify Webhook
 - In Shopify admin → Settings → Notifications → Webhooks

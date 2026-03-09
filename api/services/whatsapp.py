@@ -2,6 +2,14 @@ import os
 import httpx
 
 META_API_URL = "https://graph.facebook.com/v22.0"
+DEFAULT_ORDER_TEMPLATE_NAME = "_cod_order_confirmation_cod_order_confirmation"
+TEMPLATE_NAME_ALIASES = {
+    "hello_world": DEFAULT_ORDER_TEMPLATE_NAME,
+    "cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
+    "_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
+    "cod_order_confirmation_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
+    "_cod_order_confirmation_cod_order_confirmation": DEFAULT_ORDER_TEMPLATE_NAME,
+}
 
 
 def _meta_timeout() -> httpx.Timeout:
@@ -20,16 +28,17 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _build_order_template(order: dict) -> dict:
-    template_name = os.getenv("META_ORDER_TEMPLATE_NAME", "hello_world")
-    template_lang = os.getenv("META_ORDER_TEMPLATE_LANG", "en_US")
+def _resolve_template_name(raw_name: object, fallback: str) -> str:
+    name = _safe_text(raw_name, fallback=fallback)
+    return TEMPLATE_NAME_ALIASES.get(name.strip().lower(), name.strip())
 
-    # Meta's built-in hello_world template accepts no body components.
-    if template_name == "hello_world":
-        return {
-            "name": template_name,
-            "language": {"code": template_lang},
-        }
+
+def _build_order_template(order: dict) -> dict:
+    template_name = _resolve_template_name(
+        os.getenv("META_ORDER_TEMPLATE_NAME"),
+        fallback=DEFAULT_ORDER_TEMPLATE_NAME,
+    )
+    template_lang = os.getenv("META_ORDER_TEMPLATE_LANG", "en_US")
 
     store_name = order.get("store_name", "Our Store")
     customer   = order.get("customer", "Customer")
@@ -61,9 +70,9 @@ def _build_order_template(order: dict) -> dict:
 
 
 def _build_fallback_template() -> dict:
-    fallback_name = _safe_text(
+    fallback_name = _resolve_template_name(
         os.getenv("META_FALLBACK_TEMPLATE_NAME"),
-        fallback="hello_world",
+        fallback=DEFAULT_ORDER_TEMPLATE_NAME,
     )
     lang = _safe_text(
         os.getenv("META_ORDER_TEMPLATE_LANG"),
@@ -107,24 +116,28 @@ async def _post_message(payload: dict) -> tuple[bool, int, str]:
 
 
 async def send_confirmation(phone: str, order: dict) -> bool:
+    selected_template = _build_order_template(order)
     payload = {
         "messaging_product": "whatsapp",
         "to": phone,
         "type": "template",
-        "template": _build_order_template(order),
+        "template": selected_template,
     }
+    print(f"WhatsApp primary template selected: {selected_template.get('name')}")
     ok, status_code, body_text = await _post_message(payload)
     print(f"WhatsApp template response: {status_code} {body_text}")
     if ok:
         return True
 
-    if _env_flag("META_TEMPLATE_FALLBACK_ENABLED", True) and _template_missing_error(status_code, body_text):
+    if _env_flag("META_TEMPLATE_FALLBACK_ENABLED", False) and _template_missing_error(status_code, body_text):
+        fallback_template = _build_fallback_template()
         fallback_payload = {
             "messaging_product": "whatsapp",
             "to": phone,
             "type": "template",
-            "template": _build_fallback_template(),
+            "template": fallback_template,
         }
+        print(f"WhatsApp fallback template selected: {fallback_template.get('name')}")
         fb_ok, fb_status, fb_text = await _post_message(fallback_payload)
         print(f"WhatsApp fallback template response: {fb_status} {fb_text}")
         return fb_ok
