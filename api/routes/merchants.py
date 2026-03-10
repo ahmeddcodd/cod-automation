@@ -16,8 +16,21 @@ class MerchantConfig(BaseModel):
 @router.post("/register")
 async def register_merchant(config: MerchantConfig):
     supabase = get_supabase()
-    supabase.table("merchants").upsert(config.dict()).execute()
-    return {"status": "registered", "merchant_id": config.merchant_id}
+    try:
+        supabase.table("merchants").upsert(config.dict()).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save merchant: {exc}") from exc
+
+    result = (
+        supabase.table("merchants")
+        .select("*")
+        .eq("merchant_id", config.merchant_id)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Merchant not found after save")
+    return {"status": "registered", "merchant": result.data[0]}
 
 
 @router.get("/{merchant_id}")
