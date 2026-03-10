@@ -3,7 +3,6 @@ import base64
 import hashlib
 import hmac
 import os
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from api.db.supabase import get_supabase
@@ -77,49 +76,6 @@ def _extract_gateway_text(order: dict) -> str:
     if isinstance(gateway_names, list):
         values.extend(str(v).strip().lower() for v in gateway_names if str(v).strip())
     return " | ".join(values)
-
-
-def _normalize_shop_domain(value: str | None) -> str:
-    raw = str(value or "").strip().lower()
-    if not raw:
-        return ""
-    candidate = raw
-    if "://" in raw:
-        parsed = urlsplit(raw)
-        candidate = parsed.netloc or parsed.path
-    candidate = candidate.split("/")[0].strip()
-    if candidate.startswith("www."):
-        candidate = candidate[4:]
-    return candidate
-
-
-def _resolve_merchant_id(shop_domain: str, merchant_header: str | None) -> str | None:
-    supabase = get_supabase()
-    candidates: list[str] = []
-
-    if shop_domain:
-        candidates.append(shop_domain)
-
-    header_candidate = _normalize_shop_domain(merchant_header)
-    if header_candidate and header_candidate not in candidates:
-        candidates.append(header_candidate)
-
-    if not candidates:
-        default = os.getenv("DEFAULT_MERCHANT_ID", "").strip()
-        if default:
-            candidates.append(default)
-
-    for candidate in candidates:
-        result = (
-            supabase.table("merchants")
-            .select("merchant_id")
-            .eq("merchant_id", candidate)
-            .limit(1)
-            .execute()
-        )
-        if result.data:
-            return result.data[0]["merchant_id"]
-    return None
 
 
 def _normalize_phone(value: str) -> str:
@@ -304,7 +260,6 @@ async def receive_order(
     request: Request,
     x_shopify_hmac_sha256: str | None = Header(default=None),
     x_merchant_id: str | None = Header(default=None),
-    x_shopify_shop_domain: str | None = Header(default=None),
 ):
     raw_body = await request.body()
 
@@ -329,21 +284,7 @@ async def receive_order(
         return {"status": "skipped", "reason": "not a COD order"}
 
     try:
-        shop_domain = _normalize_shop_domain(
-            x_shopify_shop_domain
-            or order.get("shop_domain")
-            or order.get("shop_url")
-            or order.get("domain")
-        )
-        resolved_merchant_id = _resolve_merchant_id(shop_domain, x_merchant_id)
-        if not resolved_merchant_id:
-            return {
-                "status": "error",
-                "reason": "unknown merchant",
-                "shop_domain": shop_domain or None,
-            }
-
-        order_data = _build_order_data(order, resolved_merchant_id)
+        order_data = _build_order_data(order, x_merchant_id)
     except ValueError as e:
         return {"status": "error", "reason": str(e)}
 
