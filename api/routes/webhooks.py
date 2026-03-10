@@ -175,30 +175,25 @@ def _extract_currency(order: dict) -> str:
     return str(value).strip().upper() or "PKR"
 
 
-def _build_order_data(order: dict, merchant_header: str | None) -> dict:
+def _build_order_data(order: dict, shop_domain: str) -> dict:
     order_id = order.get("id")
     if order_id in (None, ""):
         raise ValueError("missing order id")
 
-    merchant_id = (
-        (merchant_header or "").strip()
-        or os.getenv("DEFAULT_MERCHANT_ID", "").strip()
-        or None
-    )
     product, quantity = _extract_product_and_qty(order)
     return {
-        "order_id":   str(order_id),
-        "order_name": str(order.get("name") or "").strip(),
-        "merchant_id": merchant_id,
-        "phone":      _extract_phone(order),
-        "customer":   _extract_customer_name(order),
-        "product":    product,
-        "quantity":   quantity,
-        "address":    _extract_address(order),
-        "amount":     _extract_amount(order),
-        "currency":   _extract_currency(order),
-        "created_at": str(order.get("created_at") or order.get("processed_at") or "").strip(),
-        "status":     "pending",
+        "order_id":    str(order_id),
+        "order_name":  str(order.get("name") or "").strip(),
+        "merchant_id": shop_domain,   # ← always the Shopify shop domain
+        "phone":       _extract_phone(order),
+        "customer":    _extract_customer_name(order),
+        "product":     product,
+        "quantity":    quantity,
+        "address":     _extract_address(order),
+        "amount":      _extract_amount(order),
+        "currency":    _extract_currency(order),
+        "created_at":  str(order.get("created_at") or order.get("processed_at") or "").strip(),
+        "status":      "pending",
     }
 
 
@@ -259,13 +254,17 @@ async def _notify_merchant(merchant_id: str | None, order_data: dict, risk: dict
 async def receive_order(
     request: Request,
     x_shopify_hmac_sha256: str | None = Header(default=None),
-    x_merchant_id: str | None = Header(default=None),
+    x_shopify_shop_domain: str | None = Header(default=None),  # ← Shopify sends this automatically
 ):
     raw_body = await request.body()
 
     if _env_flag("VERIFY_SHOPIFY_SIGNATURE", True):
         if not verify_shopify_signature(raw_body, x_shopify_hmac_sha256):
             raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    # ── Guard: shop domain must be present ────────────────────────────────
+    if not x_shopify_shop_domain:
+        return {"status": "error", "reason": "missing x-shopify-shop-domain header"}
 
     try:
         order = await request.json()
@@ -284,7 +283,7 @@ async def receive_order(
         return {"status": "skipped", "reason": "not a COD order"}
 
     try:
-        order_data = _build_order_data(order, x_merchant_id)
+        order_data = _build_order_data(order, x_shopify_shop_domain)  # ← pass shop domain
     except ValueError as e:
         return {"status": "error", "reason": str(e)}
 
