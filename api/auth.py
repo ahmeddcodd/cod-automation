@@ -13,12 +13,15 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=500, detail="Backend configuration error: SUPABASE_JWT_SECRET is missing")
         
     try:
-        # Supabase uses HS256. We must specify it explicitly.
+        # Explicitly allow HS256 and decode
         payload = jwt.decode(
             token, 
             SUPABASE_JWT_SECRET, 
             algorithms=["HS256"], 
-            options={"verify_aud": False}
+            options={
+                "verify_aud": False,
+                "verify_sub": True
+            }
         )
         return payload
     except JWTError as e:
