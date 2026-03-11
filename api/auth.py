@@ -10,65 +10,72 @@ security = HTTPBearer()
 SUPABASE_JWT_PUBLIC_KEY = os.getenv("SUPABASE_JWT_PUBLIC_KEY")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
 
-def load_ec_public_key(key_str: str):
-    """
-    Accepts either:
-      - Raw base64 DER (no headers) — what Supabase often gives you
-      - A full PEM string (with -----BEGIN PUBLIC KEY----- headers)
-    Returns a cryptography EllipticCurvePublicKey object.
-    """
+def prepare_ec_key(key_str: str):
+    """Formats and loads a PEM public key for ES256 verification."""
     if not key_str:
         return None
 
+    # 1. Clean common formatting issues from env vars
     cleaned = key_str.replace("\\n", "\n").replace("\\r", "\n").strip()
 
-    # If there are no PEM headers, it's a raw base64 DER blob — wrap it
-    if "-----BEGIN" not in cleaned:
-        # Strip any stray whitespace in the base64
-        b64 = "".join(re.findall(r"[A-Za-z0-9+/=]+", cleaned))
-        lines = [b64[i:i+64] for i in range(0, len(b64), 64)]
-        cleaned = "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----"
+    # 2. Extract base64 content only
+    match = re.search(r"-----BEGIN.*?-----(.*?)-----END.*?-----", cleaned, re.DOTALL)
+    if match:
+        content = match.group(1)
+    else:
+        content = cleaned
 
-    try:
-        return load_pem_public_key(cleaned.encode("utf-8"))
-    except Exception as e:
-        print(f"[auth] Failed to load EC public key: {e}")
-        raise ValueError(f"Invalid EC public key: {e}")
+    # 3. Clean all non-base64 characters
+    content = "".join(re.findall(r"[A-Za-z0-9+/=]+", content))
 
+    if not content:
+        return None
 
-# Pre-load the key at startup so errors surface immediately
-_ec_public_key = None
-if SUPABASE_JWT_PUBLIC_KEY:
-    try:
-        _ec_public_key = load_ec_public_key(SUPABASE_JWT_PUBLIC_KEY)
-        print("[auth] EC public key loaded successfully.")
-    except Exception as e:
-        print(f"[auth] WARNING: Could not pre-load EC public key: {e}")
+    # 4. Reconstruct clean PEM
+    lines = [content[i:i+64] for i in range(0, len(content), 64)]
+    pem = "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----"
 
+    return pem
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
+
+    # Get fresh env vars
+    public_key_raw = os.getenv("SUPABASE_JWT_PUBLIC_KEY")
+    jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
 
     try:
         header = jwt.get_unverified_header(token)
         alg = header.get("alg", "HS256")
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token format.")
+        raise HTTPException(status_code=401, detail="Invalid token format")
 
     if alg == "ES256":
-        if not _ec_public_key:
-            raise HTTPException(status_code=500, detail="Server config error: EC public key missing or invalid.")
-        key = _ec_public_key
-    else:
-        key = SUPABASE_JWT_SECRET
+        if not public_key_raw:
+            print("ERROR: SUPABASE_JWT_PUBLIC_KEY is not set in environment.")
+            raise HTTPException(status_code=500, detail="Server config error: ES256 Public Key is missing.")
+
+        key = prepare_ec_key(public_key_raw)
         if not key:
-            raise HTTPException(status_code=500, detail="Server config error: JWT secret missing.")
+            print("ERROR: SUPABASE_JWT_PUBLIC_KEY exists but is empty after cleaning.")
+            raise HTTPException(status_code=500, detail="Server config error: ES256 Public Key is invalid.")
+    else:
+        key = jwt_secret
+        if not key:
+            raise HTTPException(status_code=500, detail="Server config error: JWT Secret is missing.")
 
     try:
-        payload = jwt.decode(token, key, algorithms=[alg], options={"verify_aud": False})
+        # Decode and verify
+        payload = jwt.decode(
+            token, 
+            key, 
+            algorithms=[alg], 
+            options={"verify_aud": False}
+        )
         return payload
+
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
     except Exception as e:
-        print(f"[auth] JWT decode error ({alg}): {e}")
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
+        print(f"JWT Decode Error ({alg}): {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
