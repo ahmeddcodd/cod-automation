@@ -10,6 +10,8 @@ security = HTTPBearer()
 SUPABASE_JWT_PUBLIC_KEY = os.getenv("SUPABASE_JWT_PUBLIC_KEY")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
 
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
 def prepare_ec_key(key_str: str):
     """Formats and loads a PEM public key for ES256 verification."""
     if not key_str:
@@ -35,7 +37,12 @@ def prepare_ec_key(key_str: str):
     lines = [content[i:i+64] for i in range(0, len(content), 64)]
     pem = "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----"
 
-    return pem
+    # 5. EXPLICITLY load as a public key to avoid the 'private key' error
+    try:
+        return load_pem_public_key(pem.encode("utf-8"))
+    except Exception as e:
+        print(f"FAILED TO LOAD EC PUBLIC KEY: {str(e)}")
+        return None
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
@@ -52,13 +59,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 
     if alg == "ES256":
         if not public_key_raw:
-            print("ERROR: SUPABASE_JWT_PUBLIC_KEY is not set in environment.")
             raise HTTPException(status_code=500, detail="Server config error: ES256 Public Key is missing.")
 
+        # This now returns a cryptography Key object, not a string
         key = prepare_ec_key(public_key_raw)
         if not key:
-            print("ERROR: SUPABASE_JWT_PUBLIC_KEY exists but is empty after cleaning.")
-            raise HTTPException(status_code=500, detail="Server config error: ES256 Public Key is invalid.")
+            raise HTTPException(status_code=500, detail="Server config error: ES256 Public Key is invalid or incorrectly formatted.")
     else:
         key = jwt_secret
         if not key:
