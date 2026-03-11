@@ -1,87 +1,65 @@
 import os
 import jwt
 import re
-from fastapi import Request, HTTPException, Depends
+import base64
+from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.hazmat.primitives.serialization import load_der_public_key
 
 security = HTTPBearer()
 
 SUPABASE_JWT_PUBLIC_KEY = os.getenv("SUPABASE_JWT_PUBLIC_KEY")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
 
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
-
-def prepare_ec_key(key_str: str):
-    """Formats and loads a PEM public key for ES256 verification."""
+def load_ec_public_key(key_str: str):
     if not key_str:
         return None
 
-    # 1. Clean common formatting issues from env vars
-    cleaned = key_str.replace("\\n", "\n").replace("\\r", "\n").strip()
+    cleaned = key_str.strip()
 
-    # 2. Extract base64 content only
+    # If it's a full PEM string, extract just the base64 content
     match = re.search(r"-----BEGIN.*?-----(.*?)-----END.*?-----", cleaned, re.DOTALL)
     if match:
-        content = match.group(1)
-    else:
-        content = cleaned
+        cleaned = "".join(re.findall(r"[A-Za-z0-9+/=]+", match.group(1)))
 
-    # 3. Clean all non-base64 characters
-    content = "".join(re.findall(r"[A-Za-z0-9+/=]+", content))
+    # Vercel sometimes turns '+' into ' ' — restore it
+    cleaned = cleaned.replace(" ", "+")
 
-    if not content:
-        return None
-
-    # 4. Reconstruct clean PEM
-    lines = [content[i:i+64] for i in range(0, len(content), 64)]
-    pem = "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----"
-
-    # 5. EXPLICITLY load as a public key to avoid the 'private key' error
     try:
-        return load_pem_public_key(pem.encode("utf-8"))
+        der_bytes = base64.b64decode(cleaned)
+        key = load_der_public_key(der_bytes)
+        print("[auth] EC public key loaded successfully.")
+        return key
     except Exception as e:
-        print(f"FAILED TO LOAD EC PUBLIC KEY: {str(e)}")
+        print(f"[auth] FAILED TO LOAD EC PUBLIC KEY: {e}")
+        print(f"[auth] Key string (sanitized): {cleaned[:40]}...")
         return None
+
+_ec_public_key = load_ec_public_key(SUPABASE_JWT_PUBLIC_KEY)
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-
-    # Get fresh env vars
-    public_key_raw = os.getenv("SUPABASE_JWT_PUBLIC_KEY")
-    jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
 
     try:
         header = jwt.get_unverified_header(token)
         alg = header.get("alg", "HS256")
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token format")
+        raise HTTPException(status_code=401, detail="Invalid token format.")
 
     if alg == "ES256":
-        if not public_key_raw:
-            raise HTTPException(status_code=500, detail="Server config error: ES256 Public Key is missing.")
-
-        # This now returns a cryptography Key object, not a string
-        key = prepare_ec_key(public_key_raw)
-        if not key:
-            raise HTTPException(status_code=500, detail="Server config error: ES256 Public Key is invalid or incorrectly formatted.")
+        if not _ec_public_key:
+            raise HTTPException(status_code=500, detail="Server config error: EC public key missing or invalid.")
+        key = _ec_public_key
     else:
-        key = jwt_secret
+        key = SUPABASE_JWT_SECRET
         if not key:
-            raise HTTPException(status_code=500, detail="Server config error: JWT Secret is missing.")
+            raise HTTPException(status_code=500, detail="Server config error: JWT secret missing.")
 
     try:
-        # Decode and verify
-        payload = jwt.decode(
-            token, 
-            key, 
-            algorithms=[alg], 
-            options={"verify_aud": False}
-        )
+        payload = jwt.decode(token, key, algorithms=[alg], options={"verify_aud": False})
         return payload
-
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
     except Exception as e:
-        print(f"JWT Decode Error ({alg}): {str(e)}")
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+        print(f"[auth] JWT decode error ({alg}): {e}")
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
