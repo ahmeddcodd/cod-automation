@@ -5,14 +5,15 @@ from jose import jwt, JWTError
 
 security = HTTPBearer()
 
-SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET") or os.getenv("SUPABASE_KEY")
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
+    if not SUPABASE_JWT_SECRET:
+        raise HTTPException(status_code=500, detail="Backend configuration error: SUPABASE_JWT_SECRET is missing")
+        
     try:
-        if not SUPABASE_JWT_SECRET:
-            raise ValueError("SUPABASE_JWT_SECRET not set")
-            
+        # Supabase uses HS256. We must specify it explicitly.
         payload = jwt.decode(
             token, 
             SUPABASE_JWT_SECRET, 
