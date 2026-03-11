@@ -1,45 +1,16 @@
 import os
 import jwt
-import re
-import base64
+from jwt import PyJWKClient
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from cryptography.hazmat.primitives.serialization import load_der_public_key
 
 security = HTTPBearer()
 
-SUPABASE_JWT_PUBLIC_KEY = os.getenv("SUPABASE_JWT_PUBLIC_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
 
-
-def load_ec_public_key(key_str: str):
-    if not key_str:
-        return None
-
-    cleaned = key_str.strip()
-
-    # Strip PEM headers if present
-    match = re.search(r"-----BEGIN.*?-----(.*?)-----END.*?-----", cleaned, re.DOTALL)
-    if match:
-        cleaned = "".join(re.findall(r"[A-Za-z0-9+/=_\-]+", match.group(1)))
-
-    # Remove all whitespace
-    cleaned = re.sub(r"\s+", "", cleaned)
-
-    # Add padding if needed
-    cleaned += "=" * (4 - len(cleaned) % 4) if len(cleaned) % 4 else ""
-
-    try:
-        der_bytes = base64.urlsafe_b64decode(cleaned)
-        key = load_der_public_key(der_bytes)
-        print("[auth] EC public key loaded successfully.")
-        return key
-    except Exception as e:
-        print(f"[auth] Failed to load EC public key: {e}")
-        return None
-
-
-_ec_public_key = load_ec_public_key(SUPABASE_JWT_PUBLIC_KEY)
+# Fetches the public key directly from Supabase — no key encoding issues
+jwks_client = PyJWKClient(f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json") if SUPABASE_URL else None
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -52,9 +23,14 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Invalid token format.")
 
     if alg == "ES256":
-        if not _ec_public_key:
-            raise HTTPException(status_code=500, detail="Server config error: EC public key missing or invalid.")
-        key = _ec_public_key
+        if not jwks_client:
+            raise HTTPException(status_code=500, detail="Server config error: SUPABASE_URL is missing.")
+        try:
+            signing_key = jwks_client.get_signing_key_from_jwt(token)
+            key = signing_key.key
+        except Exception as e:
+            print(f"[auth] Failed to fetch signing key: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to fetch signing key: {e}")
     else:
         key = SUPABASE_JWT_SECRET
         if not key:
@@ -68,4 +44,3 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except Exception as e:
         print(f"[auth] JWT decode error ({alg}): {e}")
         raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
-
