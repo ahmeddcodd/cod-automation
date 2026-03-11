@@ -10,28 +10,36 @@ security = HTTPBearer()
 SUPABASE_JWT_PUBLIC_KEY = os.getenv("SUPABASE_JWT_PUBLIC_KEY")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
 
+import re
+
 def prepare_public_key(key_str: str) -> str:
-    """Ensures the PEM public key has the correct header, footer, and newlines."""
+    """Robustly formats a PEM public key for the cryptography library."""
     if not key_str:
         return key_str
     
-    # 1. Clean up any accidental literal \n or extra whitespace
-    key_str = key_str.replace("\\n", "\n").strip()
+    # 1. Clean up common formatting issues
+    # Handle literal '\n' strings often found in env vars
+    cleaned = key_str.replace("\\n", "\n").replace("\\r", "\n").strip()
     
-    # 2. If it's already multiline with headers, it might be fine, but we'll normalize it
-    if "-----BEGIN PUBLIC KEY-----" in key_str:
-        # Extract the content between headers
-        parts = key_str.split("-----")
-        if len(parts) >= 5:
-            # parts[0] is before first -----, parts[1] is BEGIN ..., parts[2] is the content, 
-            # parts[3] is END ..., parts[4] is after
-            content = parts[2].replace("\n", "").replace(" ", "").strip()
-            
-            # Reconstruct with proper 64-character line breaks
-            lines = [content[i:i+64] for i in range(0, len(content), 64)]
-            return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----"
-            
-    return key_str
+    # 2. Extract the base64 content
+    # Look for content between ANY headers or just take the whole thing
+    match = re.search(r"-----BEGIN.*?-----(.*?)-----END.*?-----", cleaned, re.DOTALL)
+    if match:
+        content = match.group(1)
+    else:
+        content = cleaned
+        
+    # 3. Remove all non-base64 characters (whitespace, newlines, etc.)
+    # This leaves only the actual key data
+    content = "".join(re.findall(r"[A-Za-z0-9+/=]+", content))
+    
+    if not content:
+        return key_str # Fallback to original if we somehow wiped it all
+        
+    # 4. Reconstruct the PEM with EXACTLY 64 characters per line
+    # This is what 'MalformedFraming' usually complains about
+    lines = [content[i:i+64] for i in range(0, len(content), 64)]
+    return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----"
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
@@ -40,28 +48,23 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     try:
         header = jwt.get_unverified_header(token)
         alg = header.get("alg", "HS256")
-        print(f"DEBUG: Validating token with algorithm: {alg}")
     except Exception as e:
-        print(f"DEBUG: Failed to read token header: {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid token format")
 
     # 2. Select the correct key based on the algorithm
     if alg == "ES256":
         key = prepare_public_key(SUPABASE_JWT_PUBLIC_KEY)
         if not key:
-            print("ERROR: Token is ES256 but SUPABASE_JWT_PUBLIC_KEY is not set in environment.")
             raise HTTPException(
                 status_code=500, 
-                detail="Server configuration error: ES256 Public Key is missing. Please add SUPABASE_JWT_PUBLIC_KEY to your environment variables."
+                detail="Server configuration error: ES256 Public Key is missing."
             )
     else:
-        # Default to HS256 for other algorithms (like HS384, HS512) or explicit HS256
         key = SUPABASE_JWT_SECRET
         if not key:
-            print(f"ERROR: Token is {alg} but SUPABASE_JWT_SECRET is not set in environment.")
             raise HTTPException(
                 status_code=500, 
-                detail="Server configuration error: JWT Secret is missing. Please add SUPABASE_JWT_SECRET to your environment variables."
+                detail="Server configuration error: JWT Secret is missing."
             )
         
     try:
@@ -76,14 +79,16 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
-    except jwt.InvalidAlgorithmError:
-        print(f"ERROR: Algorithm {alg} is not allowed or supported.")
-        raise HTTPException(status_code=401, detail=f"Invalid encryption algorithm: {alg}")
     except Exception as e:
-        print(f"JWT Decode Error ({alg}): {str(e)}")
-        # If it's a key format error, give a hint
-        if "public key" in str(e).lower() or "key" in str(e).lower():
-            detail = f"Authentication failed: Key mismatch or invalid format for {alg}. Check your environment variables."
+        error_msg = str(e)
+        print(f"JWT Decode Error ({alg}): {error_msg}")
+        
+        # Specific hint for the 'MalformedFraming' error
+        if "MalformedFraming" in error_msg:
+            detail = "Authentication failed: The Public Key format is incorrect. Please ensure you copied the PUBLIC key from Supabase (starts with -----BEGIN PUBLIC KEY-----)."
+        elif "key" in error_msg.lower():
+            detail = f"Authentication failed: Key mismatch. Your SUPABASE_JWT_PUBLIC_KEY might be the wrong type for {alg}."
         else:
-            detail = f"Authentication failed: {str(e)}"
+            detail = f"Authentication failed: {error_msg}"
+            
         raise HTTPException(status_code=401, detail=detail)
