@@ -11,31 +11,36 @@ security = HTTPBearer()
 SUPABASE_JWT_PUBLIC_KEY = os.getenv("SUPABASE_JWT_PUBLIC_KEY")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
 
+
 def load_ec_public_key(key_str: str):
     if not key_str:
         return None
 
     cleaned = key_str.strip()
 
-    # If it's a full PEM string, extract just the base64 content
+    # Strip PEM headers if present
     match = re.search(r"-----BEGIN.*?-----(.*?)-----END.*?-----", cleaned, re.DOTALL)
     if match:
-        cleaned = "".join(re.findall(r"[A-Za-z0-9+/=]+", match.group(1)))
+        cleaned = "".join(re.findall(r"[A-Za-z0-9+/=_\-]+", match.group(1)))
 
-    # Vercel sometimes turns '+' into ' ' — restore it
-    cleaned = cleaned.replace(" ", "+")
+    # Remove all whitespace
+    cleaned = re.sub(r"\s+", "", cleaned)
+
+    # Add padding if needed
+    cleaned += "=" * (4 - len(cleaned) % 4) if len(cleaned) % 4 else ""
 
     try:
-        der_bytes = base64.b64decode(cleaned)
+        der_bytes = base64.urlsafe_b64decode(cleaned)
         key = load_der_public_key(der_bytes)
         print("[auth] EC public key loaded successfully.")
         return key
     except Exception as e:
-        print(f"[auth] FAILED TO LOAD EC PUBLIC KEY: {e}")
-        print(f"[auth] Key string (sanitized): {cleaned[:40]}...")
+        print(f"[auth] Failed to load EC public key: {e}")
         return None
 
+
 _ec_public_key = load_ec_public_key(SUPABASE_JWT_PUBLIC_KEY)
+
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
@@ -63,3 +68,4 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except Exception as e:
         print(f"[auth] JWT decode error ({alg}): {e}")
         raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
+
