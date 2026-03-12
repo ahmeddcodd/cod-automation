@@ -39,6 +39,18 @@ async def register_merchant(config: MerchantConfig, user: dict = Depends(get_cur
     return {"status": "registered", "merchant": result.data[0]}
 
 
+@router.get("/me")
+async def get_my_merchant(user: dict = Depends(get_current_user)):
+    user_id = user.get("sub")
+    supabase = get_supabase()
+    
+    result = supabase.table("merchants").select("*").eq("user_id", user_id).limit(1).execute()
+    
+    if not result.data:
+        raise HTTPException(status_code=404, detail="No merchant found for this user.")
+    
+    return result.data[0]
+
 @router.get("/{merchant_id}")
 async def get_merchant(merchant_id: str, user: dict = Depends(get_current_user)):
     supabase = get_supabase()
