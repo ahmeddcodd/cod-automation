@@ -102,7 +102,9 @@ def _build_order_template(order: dict) -> dict:
 
     store_name = order.get("store_name", "Our Store")
     customer   = order.get("customer", "Customer")
+    order_name = order.get("order_name", "")
     product    = order.get("product", "your order")
+    quantity   = str(order.get("quantity", 1))
     amount     = order.get("amount", "0")
     currency   = order.get("currency", "PKR")
 
@@ -121,7 +123,9 @@ def _build_order_template(order: dict) -> dict:
                 "type": "body",
                 "parameters": [
                     {"type": "text", "text": customer},
+                    {"type": "text", "text": order_name},
                     {"type": "text", "text": product},
+                    {"type": "text", "text": quantity},
                     {"type": "text", "text": f"{currency} {amount}"},
                 ],
             }

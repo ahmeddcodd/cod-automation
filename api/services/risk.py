@@ -404,7 +404,8 @@ def _is_odd_hour_pkt(created_at_iso: str) -> bool:
     """
     try:
         dt = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
-        return dt.hour in ODD_HOURS_UTC
+        utc_hour = dt.astimezone(timezone.utc).hour
+        return utc_hour in ODD_HOURS_UTC
     except Exception:
         return False
 

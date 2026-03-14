@@ -295,7 +295,7 @@ async def receive_order(
         order_data.update({
             "phone":         f"missing-{order_data['order_id']}",
             "status":        "skipped_missing_phone",
-            "risk_score":    0.0,
+            "risk_score":    0.50,
             "risk_flags":    ["phone_missing"],
             "risk_verdict":  "high_risk",
             "risk_decision": "auto_reject",
