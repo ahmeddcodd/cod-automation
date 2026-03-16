@@ -1,0 +1,12 @@
+# Python cache/artifacts
+__pycache__/
+*.py[cod]
+
+# Local virtual environment
+.venv/
+
+# Local IDE settings
+.idea/
+
+# Local environment files
+.env
