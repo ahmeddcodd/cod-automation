@@ -1,7 +1,11 @@
+import os
+import httpx
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from api.db.supabase import get_supabase
 from api.auth import get_current_user
+
+META_GRAPH_URL = "https://graph.facebook.com/v22.0"
 
 router = APIRouter()
 
@@ -20,6 +24,11 @@ async def register_merchant(config: MerchantConfig, user: dict = Depends(get_cur
     # Verify that the user_id in the payload matches the user_id in the JWT
     if config.user_id != user.get("sub"):
         raise HTTPException(status_code=403, detail="Unauthorized: User ID mismatch")
+    if config.merchant_id != config.shopify_domain:
+        raise HTTPException(
+            status_code=400,
+            detail="merchant_id must match shopify_domain for webhook routing consistency",
+        )
 
     supabase = get_supabase()
     try:
@@ -37,6 +46,94 @@ async def register_merchant(config: MerchantConfig, user: dict = Depends(get_cur
     if not result.data:
         raise HTTPException(status_code=500, detail="Merchant not found after save")
     return {"status": "registered", "merchant": result.data[0]}
+
+
+class WhatsAppConnect(BaseModel):
+    code:            str
+    phone_number_id: str
+    waba_id:         str
+
+
+@router.post("/{merchant_id}/whatsapp")
+async def connect_whatsapp(
+    merchant_id: str,
+    body: WhatsAppConnect,
+    user: dict = Depends(get_current_user),
+):
+    """Exchange the Embedded Signup auth code for a token and store WA credentials."""
+    supabase = get_supabase()
+
+    # Ownership check
+    m_check = supabase.table("merchants").select("user_id").eq("merchant_id", merchant_id).execute()
+    if not m_check.data or m_check.data[0].get("user_id") != user.get("sub"):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    app_id = os.getenv("META_APP_ID", "")
+    app_secret = os.getenv("META_APP_SECRET", "")
+    if not app_id or not app_secret:
+        raise HTTPException(status_code=500, detail="META_APP_ID or META_APP_SECRET not configured on server")
+
+    # Step 1: Exchange the auth code for a short-lived token
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            token_resp = await client.get(
+                f"{META_GRAPH_URL}/oauth/access_token",
+                params={
+                    "client_id": app_id,
+                    "client_secret": app_secret,
+                    "redirect_uri": "",  # Embedded Signup uses empty redirect_uri
+                    "code": body.code,
+                },
+            )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to contact Meta: {e}")
+
+    if token_resp.status_code != 200:
+        detail = token_resp.text
+        print(f"Meta token exchange failed: {token_resp.status_code} {detail}")
+        raise HTTPException(status_code=502, detail=f"Meta token exchange failed: {detail}")
+
+    token_data = token_resp.json()
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=502, detail="No access_token in Meta response")
+
+    # Step 2: Exchange short-lived token for a long-lived token (60 days)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            ll_resp = await client.get(
+                f"{META_GRAPH_URL}/oauth/access_token",
+                params={
+                    "grant_type": "fb_exchange_token",
+                    "client_id": app_id,
+                    "client_secret": app_secret,
+                    "fb_exchange_token": access_token,
+                },
+            )
+        if ll_resp.status_code == 200:
+            ll_data = ll_resp.json()
+            access_token = ll_data.get("access_token", access_token)
+            print(f"Exchanged for long-lived token (expires_in={ll_data.get('expires_in')})")
+        else:
+            print(f"Long-lived token exchange failed ({ll_resp.status_code}), using short-lived token")
+    except Exception as e:
+        print(f"Long-lived token exchange error: {e}, using short-lived token")
+
+    # Step 3: Store credentials in the merchants table
+    try:
+        supabase.table("merchants").update({
+            "wa_phone_number_id": body.phone_number_id,
+            "wa_waba_id": body.waba_id,
+            "wa_access_token": access_token,
+        }).eq("merchant_id", merchant_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save WA credentials: {e}")
+
+    return {
+        "status": "connected",
+        "phone_number_id": body.phone_number_id,
+        "waba_id": body.waba_id,
+    }
 
 
 @router.get("/me")

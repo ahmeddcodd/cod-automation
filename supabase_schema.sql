@@ -1,12 +1,17 @@
 -- ── Merchants ────────────────────────────────────────────────────────────
 CREATE TABLE merchants (
-    id               UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    merchant_id      TEXT UNIQUE NOT NULL,
-    store_name       TEXT NOT NULL,
-    shopify_domain   TEXT NOT NULL,       -- e.g. your-store.myshopify.com
-    shopify_token    TEXT NOT NULL,       -- Admin API access token
-    wait_minutes     INT DEFAULT 20,      -- How long to wait before auto-cancel
-    created_at       TIMESTAMPTZ DEFAULT NOW()
+    id                  UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id             TEXT NOT NULL,       -- Supabase Auth user id (JWT sub)
+    merchant_id         TEXT UNIQUE NOT NULL,
+    store_name          TEXT NOT NULL,
+    phone               TEXT,                -- Merchant alert WhatsApp number
+    shopify_domain      TEXT NOT NULL,       -- e.g. your-store.myshopify.com
+    shopify_token       TEXT NOT NULL,       -- Admin API access token
+    wait_minutes        INT DEFAULT 20,      -- How long to wait before auto-cancel
+    wa_phone_number_id  TEXT,                -- WhatsApp Cloud API phone number ID
+    wa_waba_id          TEXT,                -- WhatsApp Business Account ID
+    wa_access_token     TEXT,                -- System User access token from Meta
+    created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ── Orders ────────────────────────────────────────────────────────────────
@@ -22,8 +27,10 @@ CREATE TABLE orders (
     currency         TEXT DEFAULT 'PKR',
     risk_score       FLOAT DEFAULT 0.0,
     risk_flags       TEXT[],              -- Array of flag strings
+    risk_verdict     TEXT DEFAULT 'low_risk',
+    risk_decision    TEXT DEFAULT 'proceed',
     status           TEXT DEFAULT 'pending',
-    -- pending | confirmed | cancelled | auto_cancelled
+    -- pending | confirmed | cancelled | auto_cancelled | auto_rejected | skipped_missing_phone
     reply            TEXT,               -- Raw text of customer's reply
     created_at       TIMESTAMPTZ DEFAULT NOW(),
     updated_at       TIMESTAMPTZ DEFAULT NOW()

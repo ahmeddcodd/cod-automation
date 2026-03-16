@@ -8,6 +8,8 @@ security = HTTPBearer()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+ALLOWED_SYMMETRIC_ALGS = {"HS256"}
+ALLOWED_ASYMMETRIC_ALGS = {"ES256", "RS256"}
 
 # Fetches the public key directly from Supabase — no key encoding issues
 jwks_client = PyJWKClient(f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json") if SUPABASE_URL else None
@@ -22,7 +24,10 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token format.")
 
-    if alg == "ES256":
+    if alg not in (ALLOWED_SYMMETRIC_ALGS | ALLOWED_ASYMMETRIC_ALGS):
+        raise HTTPException(status_code=401, detail="Unsupported token algorithm.")
+
+    if alg in ALLOWED_ASYMMETRIC_ALGS:
         if not jwks_client:
             raise HTTPException(status_code=500, detail="Server config error: SUPABASE_URL is missing.")
         try:
@@ -30,7 +35,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             key = signing_key.key
         except Exception as e:
             print(f"[auth] Failed to fetch signing key: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to fetch signing key: {e}")
+            raise HTTPException(status_code=500, detail="Failed to fetch signing key.")
     else:
         key = SUPABASE_JWT_SECRET
         if not key:
@@ -43,4 +48,4 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
     except Exception as e:
         print(f"[auth] JWT decode error ({alg}): {e}")
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed.")

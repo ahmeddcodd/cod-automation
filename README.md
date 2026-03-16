@@ -30,7 +30,9 @@ cp .env.example .env
 ### 2. Supabase
 - Create project at supabase.com (free)
 - Go to SQL Editor → run `supabase_schema.sql`
-- Copy Project URL + anon key → paste in `.env`
+- Copy Project URL + Service Role key → paste in `.env` as:
+  - `SUPABASE_URL`
+  - `SUPABASE_SERVICE_ROLE_KEY`
 
 ### 3. Inngest
 - Sign up at inngest.com (free — 50k runs/mo)
@@ -65,15 +67,18 @@ cp .env.example .env
 ### 6. Register Your Store
 ```bash
 curl -X POST https://your-domain.vercel.app/api/merchants/register \
+  -H "Authorization: Bearer <supabase-access-token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "merchant_id": "store-001",
+    "user_id": "<supabase-user-id>",
+    "merchant_id": "my-store.myshopify.com",
     "store_name": "My Store",
     "shopify_domain": "my-store.myshopify.com",
     "shopify_token": "shpat_xxxx",
     "wait_minutes": 20
   }'
 ```
+`merchant_id` should match your Shopify shop domain so webhook and merchant records resolve consistently.
 
 ### 7. Deploy to Vercel
 ```bash
@@ -101,6 +106,7 @@ ngrok http 8000
 | POST | `/api/webhooks/shopify/order` | Receives new COD orders from Shopify |
 | POST | `/api/whatsapp/reply` | Receives customer WhatsApp replies |
 | GET | `/api/whatsapp/reply` | Meta webhook URL verification |
+| GET/POST/PUT | `/api/inngest` | Inngest function registration + execution |
 | POST | `/api/merchants/register` | Register a Shopify store |
 | GET | `/api/merchants/{id}/stats` | View confirmation stats |
 | GET | `/api/merchants/{id}/orders` | View all orders |

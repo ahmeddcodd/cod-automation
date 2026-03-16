@@ -3,7 +3,10 @@ import httpx
 
 
 async def trigger_confirmation_flow(order_data: dict) -> bool:
-    event_key = os.getenv("INNGEST_EVENT_KEY")
+    event_key = str(os.getenv("INNGEST_EVENT_KEY") or "").strip()
+    if not event_key:
+        print("Inngest trigger skipped: INNGEST_EVENT_KEY is missing")
+        return False
 
     try:
         async with httpx.AsyncClient() as client:
@@ -16,7 +19,7 @@ async def trigger_confirmation_flow(order_data: dict) -> bool:
                 },
                 timeout=5,
             )
-        return response.status_code == 200
+        return 200 <= response.status_code < 300
     except Exception as e:
         print(f"Inngest trigger failed: {e}")
         return False

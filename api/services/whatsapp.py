@@ -155,12 +155,16 @@ def _template_missing_error(status_code: int, body_text: str) -> bool:
     return "132001" in lowered or "template name does not exist" in lowered
 
 
-async def _post_message(payload: dict) -> tuple[bool, int, str]:
-    token = os.getenv("META_WHATSAPP_TOKEN")
-    phone_id = os.getenv("META_PHONE_NUMBER_ID")
+async def _post_message(
+    payload: dict,
+    token: str | None = None,
+    phone_id: str | None = None,
+) -> tuple[bool, int, str]:
+    token = token or os.getenv("META_WHATSAPP_TOKEN")
+    phone_id = phone_id or os.getenv("META_PHONE_NUMBER_ID")
 
     if not token or not phone_id:
-        return False, 0, "Missing META_WHATSAPP_TOKEN or META_PHONE_NUMBER_ID"
+        return False, 0, "Missing WhatsApp token or phone number ID"
 
     try:
         async with httpx.AsyncClient(timeout=_meta_timeout()) as client:
@@ -179,7 +183,33 @@ async def _post_message(payload: dict) -> tuple[bool, int, str]:
         return False, 0, f"error: {e}"
 
 
-async def send_confirmation(phone: str, order: dict) -> bool:
+def _get_merchant_wa_creds(merchant_id: str | None) -> tuple[str | None, str | None]:
+    """Look up per-merchant WhatsApp credentials from the DB."""
+    if not merchant_id:
+        return None, None
+    try:
+        from api.db.supabase import get_supabase
+        supabase = get_supabase()
+        result = (
+            supabase.table("merchants")
+            .select("wa_access_token, wa_phone_number_id")
+            .eq("merchant_id", merchant_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            row = result.data[0]
+            token = row.get("wa_access_token")
+            pid = row.get("wa_phone_number_id")
+            if token and pid:
+                return token, pid
+    except Exception as e:
+        print(f"Failed to fetch merchant WA creds: {e}")
+    return None, None
+
+
+async def send_confirmation(phone: str, order: dict, merchant_id: str | None = None) -> bool:
+    token, phone_id = _get_merchant_wa_creds(merchant_id)
     selected_template = _build_order_template(order)
     payload = {
         "messaging_product": "whatsapp",
@@ -190,8 +220,9 @@ async def send_confirmation(phone: str, order: dict) -> bool:
     print(
         "WhatsApp primary template selected: "
         f"{selected_template.get('name')} [{selected_template.get('language', {}).get('code')}]"
+        f" (merchant={merchant_id}, per-merchant={'yes' if token else 'no'})"
     )
-    ok, status_code, body_text = await _post_message(payload)
+    ok, status_code, body_text = await _post_message(payload, token=token, phone_id=phone_id)
     print(f"WhatsApp template response: {status_code} {body_text}")
     if ok:
         return True
@@ -224,7 +255,7 @@ async def send_confirmation(phone: str, order: dict) -> bool:
                     "WhatsApp template retry selected: "
                     f"{candidate_template.get('name')} [{candidate_template.get('language', {}).get('code')}]"
                 )
-                retry_ok, retry_status, retry_body = await _post_message(retry_payload)
+                retry_ok, retry_status, retry_body = await _post_message(retry_payload, token=token, phone_id=phone_id)
                 print(f"WhatsApp template retry response: {retry_status} {retry_body}")
                 if retry_ok:
                     return True
@@ -238,20 +269,21 @@ async def send_confirmation(phone: str, order: dict) -> bool:
             "template": fallback_template,
         }
         print(f"WhatsApp fallback template selected: {fallback_template.get('name')}")
-        fb_ok, fb_status, fb_text = await _post_message(fallback_payload)
+        fb_ok, fb_status, fb_text = await _post_message(fallback_payload, token=token, phone_id=phone_id)
         print(f"WhatsApp fallback template response: {fb_status} {fb_text}")
         return fb_ok
 
     return False
 
 
-async def send_message(phone: str, text: str) -> bool:
+async def send_message(phone: str, text: str, merchant_id: str | None = None) -> bool:
+    token, phone_id = _get_merchant_wa_creds(merchant_id)
     payload = {
         "messaging_product": "whatsapp",
         "to": phone,
         "type": "text",
         "text": {"body": text},
     }
-    ok, status_code, body_text = await _post_message(payload)
+    ok, status_code, body_text = await _post_message(payload, token=token, phone_id=phone_id)
     print(f"WhatsApp text response: {status_code} {body_text}")
     return ok

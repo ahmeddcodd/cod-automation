@@ -93,7 +93,7 @@ async def parse_reply_with_llm(customer_reply: str, order: dict | None = None) -
 
     if not api_key:
         print("GROQ_API_KEY missing — using keyword fallback")
-        return _keyword_fallback(customer_reply, context)
+        return _keyword_fallback(customer_reply)
 
     try:
         payload = {
@@ -130,13 +130,13 @@ async def parse_reply_with_llm(customer_reply: str, order: dict | None = None) -
         print(f"LLM intent for '{customer_reply}': {intent} | {reason}")
 
         if intent not in ("confirmed", "cancelled", "unclear"):
-            return _keyword_fallback(customer_reply, context)
+            return _keyword_fallback(customer_reply)
 
         return intent
 
     except Exception as e:
         print(f"Groq LLM failed: {e} — using keyword fallback")
-        return _keyword_fallback(customer_reply, context)
+        return _keyword_fallback(customer_reply)
 
 
 def _fast_path(text: str) -> str | None:
@@ -193,10 +193,10 @@ def _build_context(order: dict) -> dict:
     }
 
 
-def _keyword_fallback(text: str, context: dict) -> str:
+def _keyword_fallback(text: str) -> str:
     """
     Minimal keyword fallback when Groq is unavailable.
-    Uses risk verdict to break ties on ambiguous replies.
+    Returns unclear when intent is ambiguous.
     """
     cleaned = text.lower().strip()
 
@@ -208,9 +208,6 @@ def _keyword_fallback(text: str, context: dict) -> str:
     if negative and not positive:
         return "cancelled"
 
-    # Truly ambiguous — use risk to break tie
-    if context.get("risk_verdict") == "high_risk":
-        return "unclear"
     return "unclear"
 
 

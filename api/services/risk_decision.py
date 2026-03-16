@@ -165,11 +165,15 @@ def _rule_based_decision(risk: dict) -> dict:
     Conservative rule-based fallback.
     Only auto_rejects when evidence is overwhelming.
     """
-    score  = risk["score"]
-    flags  = set(risk.get("flags", []))
+    score = risk["score"]
+    flags = set(risk.get("flags", []))
+    past = int(risk.get("past_order_count", 0) or 0)
+    is_first_order = past == 0
 
     # Clear repeat-fraudster pattern
     if (
+        not is_first_order
+        and
         "all_orders_cancelled" in flags
         and "repeat_auto_cancels" in flags
         and score >= 0.80
@@ -180,10 +184,21 @@ def _rule_based_decision(risk: dict) -> dict:
         }
 
     # Obvious test order
-    if "zero_amount" in flags and ("name_is_test" in flags or "address_is_filler" in flags):
+    if (
+        not is_first_order
+        and "zero_amount" in flags
+        and ("name_is_test" in flags or "address_is_filler" in flags)
+    ):
         return {
             "decision": "auto_reject",
             "reason":   "Test order: zero amount with fake name or address",
+        }
+
+    # Risk engine failures should be reviewed manually, not auto-proceeded.
+    if "risk_engine_unavailable" in flags:
+        return {
+            "decision": "flag_for_review",
+            "reason":   "Risk engine unavailable — manual review required",
         }
 
     if score >= 0.55:

@@ -9,6 +9,7 @@ from api.db.supabase import get_supabase
 from api.services.inngest import trigger_confirmation_flow
 from api.services.risk import calculate_risk
 from api.services.risk_decision import make_order_decision
+from api.services.shopify import cancel_order
 from api.services.whatsapp import send_confirmation, send_message
 
 router = APIRouter()
@@ -205,6 +206,26 @@ def _is_cod_order(gateway_text: str) -> bool:
     return False
 
 
+def _risk_engine_unavailable_result() -> dict:
+    """
+    Conservative fallback when risk scoring fails.
+    Avoid fail-open by requiring manual review.
+    """
+    return {
+        "score": 0.4,
+        "verdict": "medium_risk",
+        "flags": ["risk_engine_unavailable"],
+        "breakdown": {"risk_engine_unavailable": 0.4},
+        "signal_context": {
+            "risk_engine_unavailable": "Risk engine unavailable — order needs manual review"
+        },
+        "past_order_count": 0,
+        "confirmed_count": 0,
+        "cancelled_count": 0,
+        "address_used": "",
+    }
+
+
 async def _fetch_store_name(merchant_id: str | None) -> str:
     if not merchant_id:
         return "Our Store"
@@ -242,7 +263,8 @@ async def _notify_merchant(merchant_id: str | None, order_data: dict, risk: dict
             f"Risk Score: {risk.get('score', 0.0)}\n"
             f"Flags: {flags_text}\n"
             f"Reason: {reason}\n\n"
-            f"WhatsApp confirmation has been sent to the customer."
+            f"WhatsApp confirmation has been sent to the customer.",
+            merchant_id=merchant_id,
         )
     except Exception as e:
         print(f"Merchant notification failed: {e}")
@@ -297,7 +319,7 @@ async def receive_order(
             "status":        "skipped_missing_phone",
             "risk_score":    0.50,
             "risk_flags":    ["phone_missing"],
-            "risk_verdict":  "high_risk",
+            "risk_verdict":  "medium_risk",
             "risk_decision": "auto_reject",
         })
         try:
@@ -317,17 +339,21 @@ async def receive_order(
         order_data["risk_verdict"] = risk["verdict"]
         print(f"Step 3: Risk score={risk['score']} verdict={risk['verdict']} flags={risk['flags']}")
     except asyncio.TimeoutError:
-        print("Step 3: Risk check timed out — defaulting to low_risk")
-        risk = {"score": 0.0, "verdict": "low_risk", "flags": [], "breakdown": {},
-                "signal_context": {}, "past_order_count": 0, "confirmed_count": 0,
-                "cancelled_count": 0, "address_used": ""}
-        order_data.update({"risk_score": 0.0, "risk_flags": [], "risk_verdict": "low_risk"})
+        print("Step 3: Risk check timed out — falling back to manual review")
+        risk = _risk_engine_unavailable_result()
+        order_data.update({
+            "risk_score": risk["score"],
+            "risk_flags": risk["flags"],
+            "risk_verdict": risk["verdict"],
+        })
     except Exception as e:
-        print(f"Step 3: Risk check failed: {e} — defaulting to low_risk")
-        risk = {"score": 0.0, "verdict": "low_risk", "flags": [], "breakdown": {},
-                "signal_context": {}, "past_order_count": 0, "confirmed_count": 0,
-                "cancelled_count": 0, "address_used": ""}
-        order_data.update({"risk_score": 0.0, "risk_flags": [], "risk_verdict": "low_risk"})
+        print(f"Step 3: Risk check failed: {e} — falling back to manual review")
+        risk = _risk_engine_unavailable_result()
+        order_data.update({
+            "risk_score": risk["score"],
+            "risk_flags": risk["flags"],
+            "risk_verdict": risk["verdict"],
+        })
 
     # ── LLM order decision ────────────────────────────────────────────────
     decision_result = {"decision": "proceed", "reason": "default", "source": "rules"}
@@ -338,11 +364,21 @@ async def receive_order(
         order_data["risk_decision"] = decision_result["decision"]
         print(f"Step 3.5: Decision={decision_result['decision']} source={decision_result['source']} | {decision_result['reason']}")
     except asyncio.TimeoutError:
-        print("Step 3.5: Order decision timed out — proceeding")
-        order_data["risk_decision"] = "proceed"
+        print("Step 3.5: Order decision timed out — flagging for review")
+        decision_result = {
+            "decision": "flag_for_review",
+            "reason": "Decision service timeout",
+            "source": "rules",
+        }
+        order_data["risk_decision"] = "flag_for_review"
     except Exception as e:
-        print(f"Step 3.5: Order decision failed: {e} — proceeding")
-        order_data["risk_decision"] = "proceed"
+        print(f"Step 3.5: Order decision failed: {e} — flagging for review")
+        decision_result = {
+            "decision": "flag_for_review",
+            "reason": "Decision service failed",
+            "source": "rules",
+        }
+        order_data["risk_decision"] = "flag_for_review"
 
     # ── Save to Supabase ──────────────────────────────────────────────────
     try:
@@ -356,19 +392,47 @@ async def receive_order(
 
     # ── Act on decision ───────────────────────────────────────────────────
     if decision == "auto_reject":
+        cancelled_on_shopify = False
+        try:
+            cancelled_on_shopify = await asyncio.wait_for(
+                cancel_order(order_data["order_id"], order_data["merchant_id"]),
+                timeout=10,
+            )
+        except asyncio.TimeoutError:
+            print("Step 5: Auto-reject cancel timed out on Shopify")
+        except Exception as e:
+            print(f"Step 5: Auto-reject cancel failed on Shopify: {e}")
+
+        if cancelled_on_shopify:
+            try:
+                supabase = get_supabase()
+                supabase.table("orders").update({"status": "auto_rejected"}).eq(
+                    "order_id", order_data["order_id"]
+                ).execute()
+            except Exception as e:
+                print(f"Auto-reject DB update failed: {e}")
+            print("Step 5: Order auto-rejected on Shopify — no WhatsApp sent")
+            return {"status": "auto_rejected", "order_id": order_data["order_id"]}
+
+        print("Step 5: Auto-reject fallback to flag_for_review (Shopify cancel failed)")
+        decision = "flag_for_review"
+        decision_result = {
+            "decision": "flag_for_review",
+            "reason": "Auto-reject fallback: could not cancel on Shopify",
+            "source": decision_result.get("source", "rules"),
+        }
+        order_data["risk_decision"] = "flag_for_review"
         try:
             supabase = get_supabase()
-            supabase.table("orders").update({"status": "auto_rejected"}).eq(
+            supabase.table("orders").update({"risk_decision": "flag_for_review"}).eq(
                 "order_id", order_data["order_id"]
             ).execute()
         except Exception as e:
-            print(f"Auto-reject DB update failed: {e}")
-        print("Step 5: Order auto-rejected — no WhatsApp sent")
-        return {"status": "auto_rejected", "order_id": order_data["order_id"]}
+            print(f"Auto-reject fallback DB update failed: {e}")
 
     # Send WhatsApp confirmation (both proceed and flag_for_review)
     try:
-        sent = await send_confirmation(order_data["phone"], order_data)
+        sent = await send_confirmation(order_data["phone"], order_data, merchant_id=order_data["merchant_id"])
         print(f"Step 5: WhatsApp {'sent' if sent else 'failed'}")
     except Exception as e:
         print(f"WhatsApp failed: {e}")
@@ -384,11 +448,20 @@ async def receive_order(
             print(f"Merchant notification failed: {e}")
 
     # ── Trigger Inngest wait-and-cancel flow ──────────────────────────────
+    trigger_warning = None
     try:
-        await trigger_confirmation_flow(order_data)
-        print("Step 6: Inngest triggered")
+        triggered = await trigger_confirmation_flow(order_data)
+        if triggered:
+            print("Step 6: Inngest triggered")
+        else:
+            trigger_warning = "inngest_trigger_failed"
+            print("Step 6: Inngest trigger failed (response not successful)")
     except Exception as e:
+        trigger_warning = "inngest_trigger_failed"
         print(f"Inngest failed: {e}")
 
     print("Step 7: Done")
-    return {"status": "processing", "order_id": order_data["order_id"]}
+    response = {"status": "processing", "order_id": order_data["order_id"]}
+    if trigger_warning:
+        response["warning"] = trigger_warning
+    return response

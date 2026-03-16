@@ -18,6 +18,7 @@ Verdict thresholds:
 """
 
 from datetime import datetime, timezone
+import re
 from api.db.supabase import get_supabase
 
 
@@ -92,6 +93,11 @@ FILLER_WORDS: frozenset[str] = frozenset({
     "none", "nil", "n/a", "null", "demo", "temp", "example",
 })
 
+# Common placeholders returned by integrations when real customer names are missing.
+PLACEHOLDER_NAMES: frozenset[str] = frozenset({
+    "customer", "guest", "unknown", "n/a", "na",
+})
+
 # Valid Pakistani mobile carrier prefixes (Jazz, Zong, Telenor, Ufone, SCO)
 PK_MOBILE_PREFIXES: frozenset[str] = frozenset({
     # Jazz / Warid
@@ -156,6 +162,7 @@ async def calculate_risk(order: dict) -> dict:
     name     = (order.get("customer") or "").strip()
     created  = order.get("created_at")
     address  = _extract_address(order)
+    merchant_id = (order.get("merchant_id") or "").strip()
 
     # ── 1. Phone ───────────────────────────────────────────────────────────
     if not phone:
@@ -183,9 +190,13 @@ async def calculate_risk(order: dict) -> dict:
     confirmed_count  = 0
     cancelled_count  = 0
 
-    if phone:
+    if phone and merchant_id:
         history_flags, past_order_count, confirmed_count, cancelled_count = (
-            await _check_order_history(phone, str(order.get("order_id", "")))
+            await _check_order_history(
+                phone,
+                str(order.get("order_id", "")),
+                merchant_id=merchant_id,
+            )
         )
         triggered.update(history_flags)
 
@@ -215,7 +226,7 @@ async def calculate_risk(order: dict) -> dict:
             triggered["address_no_house_number"] = WEIGHTS["address_no_house_number"]
 
     # ── 5. Name ────────────────────────────────────────────────────────────
-    if not name:
+    if not name or _is_placeholder_name(name):
         triggered["name_missing"] = WEIGHTS["name_missing"]
     else:
         if len(name) <= 1:
@@ -288,23 +299,30 @@ def _extract_address(order: dict) -> str:
 # ── Order history ──────────────────────────────────────────────────────────
 
 async def _check_order_history(
-    phone: str, current_order_id: str
+    phone: str,
+    current_order_id: str,
+    merchant_id: str | None = None,
 ) -> tuple[dict[str, float], int, int, int]:
     """
     Returns (flags, total, confirmed, cancelled) for this phone number.
     confirmed_count lets the LLM calculate confirmation rate, not just cancel rate.
     """
     flags: dict[str, float] = {}
+    if not merchant_id:
+        # Safety guard: never mix order history across stores.
+        return flags, 0, 0, 0
+
     supabase = get_supabase()
 
-    past_orders = (
+    query = (
         supabase.table("orders")
         .select("status, created_at")
         .eq("phone", phone)
         .neq("order_id", current_order_id)
-        .execute()
-        .data
+        .eq("merchant_id", merchant_id)
     )
+
+    past_orders = query.execute().data
 
     if not past_orders:
         return flags, 0, 0, 0
@@ -333,8 +351,8 @@ async def _check_order_history(
     if auto_cancelled >= 2:
         flags["repeat_auto_cancels"] = WEIGHTS["repeat_auto_cancels"]
 
-    # 3+ orders placed from this phone in the last 24 hours
-    if _count_orders_in_last_hours(past_orders, hours=24) >= 3:
+    # 3+ orders from this phone in the last 24h including the current order.
+    if (_count_orders_in_last_hours(past_orders, hours=24) + 1) >= 3:
         flags["recent_order_flood"] = WEIGHTS["recent_order_flood"]
 
     return flags, total, confirmed, cancelled
@@ -386,8 +404,13 @@ def _contains_filler(text: str) -> bool:
     True if any word-token in text exactly matches a known filler word.
     Uses word-boundary splitting so 'testing123' does NOT match 'test'.
     """
-    tokens = set(text.lower().split())
+    tokens = set(re.findall(r"[a-z0-9/]+", text.lower()))
     return bool(tokens & FILLER_WORDS)
+
+
+def _is_placeholder_name(name: str) -> bool:
+    """Treat generic placeholders as missing customer identity."""
+    return name.strip().lower() in PLACEHOLDER_NAMES
 
 
 # ── Time helpers ───────────────────────────────────────────────────────────
