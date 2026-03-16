@@ -197,14 +197,23 @@ async def get_stats(merchant_id: str, user: dict = Depends(get_current_user)):
     confirmed      = sum(1 for o in orders if o["status"] == "confirmed")
     cancelled      = sum(1 for o in orders if o["status"] == "cancelled")
     auto_cancelled = sum(1 for o in orders if o["status"] == "auto_cancelled")
-    pending        = sum(1 for o in orders if o["status"] == "pending")
+    auto_rejected  = sum(1 for o in orders if o["status"] == "auto_rejected")
+    pending_wa_failed = sum(1 for o in orders if o["status"] == "pending_wa_failed")
+    skipped_missing_phone = sum(1 for o in orders if o["status"] == "skipped_missing_phone")
+    pending        = sum(
+        1 for o in orders
+        if o["status"] in ("pending", "pending_wa_failed")
+    )
 
     return {
         "total":             total,
         "confirmed":         confirmed,
         "cancelled":         cancelled,
         "auto_cancelled":    auto_cancelled,
+        "auto_rejected":     auto_rejected,
+        "pending_wa_failed": pending_wa_failed,
+        "skipped_missing_phone": skipped_missing_phone,
         "pending":           pending,
         "confirmation_rate": f"{(confirmed / total * 100):.1f}%" if total else "0%",
-        "fake_order_rate":   f"{((cancelled + auto_cancelled) / total * 100):.1f}%" if total else "0%",
+        "fake_order_rate":   f"{((cancelled + auto_cancelled + auto_rejected) / total * 100):.1f}%" if total else "0%",
     }

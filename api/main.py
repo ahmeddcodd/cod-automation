@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes import webhooks, whatsapp, merchants
@@ -9,11 +11,22 @@ app = FastAPI(
     version="1.0.0",
 )
 
+
+def _cors_origins() -> list[str]:
+    raw = str(os.getenv("CORS_ALLOW_ORIGINS") or "*").strip()
+    if raw == "*":
+        return ["*"]
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    return origins or ["*"]
+
+
+origins = _cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=origins != ["*"],
 )
 
 app.include_router(webhooks.router,  prefix="/api/webhooks",  tags=["Webhooks"])

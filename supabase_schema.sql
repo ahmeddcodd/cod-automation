@@ -4,7 +4,6 @@ CREATE TABLE merchants (
     user_id             TEXT NOT NULL,       -- Supabase Auth user id (JWT sub)
     merchant_id         TEXT UNIQUE NOT NULL,
     store_name          TEXT NOT NULL,
-    phone               TEXT,                -- Merchant alert WhatsApp number
     shopify_domain      TEXT NOT NULL,       -- e.g. your-store.myshopify.com
     shopify_token       TEXT NOT NULL,       -- Admin API access token
     wait_minutes        INT DEFAULT 20,      -- How long to wait before auto-cancel
@@ -30,7 +29,7 @@ CREATE TABLE orders (
     risk_verdict     TEXT DEFAULT 'low_risk',
     risk_decision    TEXT DEFAULT 'proceed',
     status           TEXT DEFAULT 'pending',
-    -- pending | confirmed | cancelled | auto_cancelled | auto_rejected | skipped_missing_phone
+    -- pending | confirmed | cancelled | auto_cancelled | auto_rejected | skipped_missing_phone | pending_wa_failed
     reply            TEXT,               -- Raw text of customer's reply
     created_at       TIMESTAMPTZ DEFAULT NOW(),
     updated_at       TIMESTAMPTZ DEFAULT NOW()

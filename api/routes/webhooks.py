@@ -10,7 +10,7 @@ from api.services.inngest import trigger_confirmation_flow
 from api.services.risk import calculate_risk
 from api.services.risk_decision import make_order_decision
 from api.services.shopify import cancel_order
-from api.services.whatsapp import send_confirmation, send_message
+from api.services.whatsapp import send_confirmation
 
 router = APIRouter()
 
@@ -242,34 +242,6 @@ async def _fetch_store_name(merchant_id: str | None) -> str:
         return "Our Store"
 
 
-async def _notify_merchant(merchant_id: str | None, order_data: dict, risk: dict, reason: str) -> None:
-    """Alert the merchant's WhatsApp about a suspicious order."""
-    if not merchant_id:
-        return
-    try:
-        supabase = get_supabase()
-        result   = supabase.table("merchants").select("phone").eq("merchant_id", merchant_id).execute()
-        merchant_phone = result.data[0].get("phone", "") if result.data else ""
-        if not merchant_phone:
-            return
-        flags_text = ", ".join(risk.get("flags", [])) or "none"
-        await send_message(
-            merchant_phone,
-            f"⚠️ *Suspicious Order Alert*\n\n"
-            f"Order: {order_data.get('order_name', '')}\n"
-            f"Customer: {order_data.get('customer', '')}\n"
-            f"Phone: {order_data.get('phone', '')}\n"
-            f"Amount: {order_data.get('currency', '')} {order_data.get('amount', '')}\n"
-            f"Risk Score: {risk.get('score', 0.0)}\n"
-            f"Flags: {flags_text}\n"
-            f"Reason: {reason}\n\n"
-            f"WhatsApp confirmation has been sent to the customer.",
-            merchant_id=merchant_id,
-        )
-    except Exception as e:
-        print(f"Merchant notification failed: {e}")
-
-
 # ── Main webhook handler ───────────────────────────────────────────────────
 
 @router.post("/shopify/order")
@@ -380,6 +352,15 @@ async def receive_order(
         }
         order_data["risk_decision"] = "flag_for_review"
 
+    if "risk_engine_unavailable" in set(risk.get("flags", [])) and order_data["risk_decision"] == "proceed":
+        decision_result = {
+            "decision": "flag_for_review",
+            "reason": "Risk engine unavailable — forced manual review",
+            "source": decision_result.get("source", "rules"),
+        }
+        order_data["risk_decision"] = "flag_for_review"
+        print("Step 3.6: Forced decision=flag_for_review due risk engine unavailable")
+
     # ── Save to Supabase ──────────────────────────────────────────────────
     try:
         await asyncio.wait_for(asyncio.to_thread(_upsert_order_record, order_data), timeout=8)
@@ -431,21 +412,29 @@ async def receive_order(
             print(f"Auto-reject fallback DB update failed: {e}")
 
     # Send WhatsApp confirmation (both proceed and flag_for_review)
+    sent = False
     try:
         sent = await send_confirmation(order_data["phone"], order_data, merchant_id=order_data["merchant_id"])
         print(f"Step 5: WhatsApp {'sent' if sent else 'failed'}")
     except Exception as e:
         print(f"WhatsApp failed: {e}")
+        sent = False
 
-    # Alert merchant if flagged
-    if decision == "flag_for_review":
+    # If customer confirmation was not delivered, do not start wait/cancel pipeline.
+    if not sent:
         try:
-            await _notify_merchant(
-                order_data["merchant_id"], order_data, risk, decision_result["reason"]
-            )
-            print("Step 5.5: Merchant notified")
+            supabase = get_supabase()
+            supabase.table("orders").update({"status": "pending_wa_failed"}).eq(
+                "order_id", order_data["order_id"]
+            ).execute()
         except Exception as e:
-            print(f"Merchant notification failed: {e}")
+            print(f"WA-failed DB update failed: {e}")
+
+        return {
+            "status": "pending_manual_review",
+            "order_id": order_data["order_id"],
+            "warning": "whatsapp_send_failed",
+        }
 
     # ── Trigger Inngest wait-and-cancel flow ──────────────────────────────
     trigger_warning = None

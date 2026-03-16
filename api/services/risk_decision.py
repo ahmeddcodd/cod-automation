@@ -6,7 +6,7 @@ actionable decision on what to do with the order.
 
 Decisions:
   proceed         → send WhatsApp confirmation normally
-  flag_for_review → send WhatsApp + notify merchant (suspicious but uncertain)
+  flag_for_review → send WhatsApp and mark for manual review
   auto_reject     → cancel immediately, no WhatsApp (clearly fake)
 
 The rule-based fallback is intentionally conservative:
@@ -43,7 +43,7 @@ PROCEED
   - Medium risk but signals are weak or explainable
 
 FLAG_FOR_REVIEW
-  Send WhatsApp but also alert the merchant to watch this order.
+  Send WhatsApp and mark the order for manual review.
   Use when:
   - Medium-to-high risk with 2–3 suspicious signals
   - High risk but order details look plausible (normal amount, real name)
